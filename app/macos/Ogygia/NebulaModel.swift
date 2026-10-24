@@ -109,6 +109,18 @@ final class NebulaModel {
         }
     }
 
+    /// Follow the fleet's Nebula config or manage it locally, through the
+    /// daemon. Returns the daemon's refusal, if it refused.
+    func saveConfig(mode: DaemonProtocol.ConfigMode, local: DaemonProtocol.LocalConfig) async -> String? {
+        do {
+            status = try await DaemonClient.send(.setConfig(mode: mode, local: local))
+            unreachable = nil
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
     /// Ask launchd to run the daemon, which macOS holds until the user
     /// allows it under Login Items. Registering again on every launch is
     /// harmless and repairs a registration the user removed.

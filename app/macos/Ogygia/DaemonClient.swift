@@ -17,6 +17,20 @@ enum DaemonClient {
     }
 
     static func send(_ request: DaemonProtocol.Request) async throws -> DaemonProtocol.Status {
+        guard let status = try await respond(request).status else {
+            throw Failure.daemon("The network daemon sent an empty reply.")
+        }
+        return status
+    }
+
+    static func mesh() async throws -> DaemonProtocol.Mesh {
+        guard let mesh = try await respond(.mesh).mesh else {
+            throw Failure.daemon("The network daemon sent an empty reply.")
+        }
+        return mesh
+    }
+
+    private static func respond(_ request: DaemonProtocol.Request) async throws -> DaemonProtocol.Response {
         let line = try DaemonProtocol.encode(request)
         // Blocking socket calls stay off the main actor.
         let reply = try await Task.detached { try exchange(line) }.value
@@ -24,10 +38,7 @@ enum DaemonClient {
         if let error = response.error {
             throw Failure.daemon(error)
         }
-        guard let status = response.status else {
-            throw Failure.daemon("The network daemon sent an empty reply.")
-        }
-        return status
+        return response
     }
 
     private static func exchange(_ line: Data) throws -> Data {
@@ -36,8 +47,9 @@ enum DaemonClient {
         defer { close(fd) }
 
         // A daemon busy evaluating still answers at once, so a slow reply
-        // means something is wrong.
-        var timeout = timeval(tv_sec: 5, tv_usec: 0)
+        // means something is wrong. Asking Nebula for the mesh may take the
+        // daemon up to its own 10 second limit.
+        var timeout = timeval(tv_sec: 15, tv_usec: 0)
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
         setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
 

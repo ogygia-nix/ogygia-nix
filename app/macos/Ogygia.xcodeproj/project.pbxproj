@@ -19,6 +19,10 @@
 		4B1E7D2A9C3F5E8A1D6B0C47 /* GeneralSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E5A2F1C7D4B9E3A6C0F2D58 /* GeneralSettingsView.swift */; };
 		2C9F4A7E1B5D8C3F6A0E9B61 /* FleetSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D3B8E2A5F1C9D7E4B0A3C72 /* FleetSettingsView.swift */; };
 		9A4E1C7F3B6D2A8E5C1F0D83 /* NebulaOverviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1F7C3A9E5D2B8F4A6E0C1B94 /* NebulaOverviewView.swift */; };
+		3A7D1E5C9B2F4A8E6C0D1F05 /* MeshModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C2E9A7D3F1B8E4A6D0C2E16 /* MeshModel.swift */; };
+		7E4B2D9A1C6F3E8B5A0D4C27 /* NebulaMeshView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B1F6C3E7A4D2B8F5E0A6D38 /* NebulaMeshView.swift */; };
+		2D8A5F1E9C3B7D4A6F0E8B49 /* NebulaPeersView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F6C2A8E1D5B9F3C7A0E2D5A /* NebulaPeersView.swift */; };
+		8C3E7B1A5D9F2C6E4B0A9F6B /* NebulaConfigView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A9D4F2C8E1B7A5D3F0C4B7C /* NebulaConfigView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -36,6 +40,10 @@
 		8E5A2F1C7D4B9E3A6C0F2D58 /* GeneralSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GeneralSettingsView.swift; sourceTree = "<group>"; };
 		6D3B8E2A5F1C9D7E4B0A3C72 /* FleetSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FleetSettingsView.swift; sourceTree = "<group>"; };
 		1F7C3A9E5D2B8F4A6E0C1B94 /* NebulaOverviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NebulaOverviewView.swift; sourceTree = "<group>"; };
+		5C2E9A7D3F1B8E4A6D0C2E16 /* MeshModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeshModel.swift; sourceTree = "<group>"; };
+		9B1F6C3E7A4D2B8F5E0A6D38 /* NebulaMeshView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NebulaMeshView.swift; sourceTree = "<group>"; };
+		4F6C2A8E1D5B9F3C7A0E2D5A /* NebulaPeersView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NebulaPeersView.swift; sourceTree = "<group>"; };
+		6A9D4F2C8E1B7A5D3F0C4B7C /* NebulaConfigView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NebulaConfigView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -60,8 +68,12 @@
 				6D3B8E2A5F1C9D7E4B0A3C72 /* FleetSettingsView.swift */,
 				8E5A2F1C7D4B9E3A6C0F2D58 /* GeneralSettingsView.swift */,
 				770B0B90849FD8EB2458677A /* Info.plist */,
+				5C2E9A7D3F1B8E4A6D0C2E16 /* MeshModel.swift */,
+				6A9D4F2C8E1B7A5D3F0C4B7C /* NebulaConfigView.swift */,
+				9B1F6C3E7A4D2B8F5E0A6D38 /* NebulaMeshView.swift */,
 				1B34E99816B0B3FEE1195D6E /* NebulaModel.swift */,
 				1F7C3A9E5D2B8F4A6E0C1B94 /* NebulaOverviewView.swift */,
+				4F6C2A8E1D5B9F3C7A0E2D5A /* NebulaPeersView.swift */,
 				414372295F5BD72756A7616C /* Ogygia.entitlements */,
 				653E548688CDC08A29F68437 /* OgygiaApp.swift */,
 				D766984E6F0FBC22CAB82AB7 /* SettingsView.swift */,
@@ -167,6 +179,10 @@
 				3E402633F76177DC1811AF1D /* NebulaModel.swift in Sources */,
 				AB067466CB473BA874815C0D /* OgygiaApp.swift in Sources */,
 				B66D1B35B2E070D51D8CE8F9 /* SettingsView.swift in Sources */,
+				8C3E7B1A5D9F2C6E4B0A9F6B /* NebulaConfigView.swift in Sources */,
+				2D8A5F1E9C3B7D4A6F0E8B49 /* NebulaPeersView.swift in Sources */,
+				7E4B2D9A1C6F3E8B5A0D4C27 /* NebulaMeshView.swift in Sources */,
+				3A7D1E5C9B2F4A8E6C0D1F05 /* MeshModel.swift in Sources */,
 				9A4E1C7F3B6D2A8E5C1F0D83 /* NebulaOverviewView.swift in Sources */,
 				2C9F4A7E1B5D8C3F6A0E9B61 /* FleetSettingsView.swift in Sources */,
 				4B1E7D2A9C3F5E8A1D6B0C47 /* GeneralSettingsView.swift in Sources */,

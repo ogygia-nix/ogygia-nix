@@ -15,6 +15,17 @@ pub const DOMAIN: &str = "dev.ogygia.macos";
 pub const KEY_REPOSITORY_URL: &str = "RepositoryURL";
 pub const KEY_BRANCH: &str = "Branch";
 pub const KEY_DEVICE: &str = "Device";
+/// `fleet` or `local`; see [`crate::config`].
+pub const KEY_CONFIG_MODE: &str = "ConfigMode";
+/// The local config, as JSON.
+pub const KEY_LOCAL_CONFIG: &str = "LocalConfig";
+
+/// What [`Settings::installable`] is evaluated with: the device's Nebula
+/// config, and the fleet's hosts, so the app can name the mesh. The result
+/// deserializes as a [`crate::config::Fleet`].
+pub const APPLY: &str = "nebula: { inherit (nebula) settings; topology = { \
+    hosts = builtins.mapAttrs (_: host: host.ipv4) nebula.topology.hosts; \
+    inherit (nebula.topology) lighthouses relays; }; }";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Settings {
@@ -25,8 +36,8 @@ pub struct Settings {
 }
 
 impl Settings {
-    /// The installable for this device's Nebula config, or `None` until the
-    /// repository and device are both set.
+    /// The installable for this device's Nebula module, to evaluate with
+    /// [`APPLY`], or `None` until the repository and device are both set.
     pub fn installable(&self) -> Result<Option<String>> {
         let (Some(url), Some(device)) = (&self.repository_url, &self.device) else {
             return Ok(None);
@@ -37,7 +48,7 @@ impl Settings {
             None => format!("git+{url}"),
         };
         Ok(Some(format!(
-            "{reference}#ogygiaConfigurations.\"{device}\".config.ogygia.nebula.settings"
+            "{reference}#ogygiaConfigurations.\"{device}\".config.ogygia.nebula"
         )))
     }
 
@@ -134,7 +145,7 @@ mod tests {
                 .installable()
                 .unwrap()
                 .unwrap(),
-            "git+https://example.com/fleet.git#ogygiaConfigurations.\"mac.lt.example.com\".config.ogygia.nebula.settings"
+            "git+https://example.com/fleet.git#ogygiaConfigurations.\"mac.lt.example.com\".config.ogygia.nebula"
         );
     }
 
@@ -146,7 +157,7 @@ mod tests {
         };
         assert_eq!(
             branched.installable().unwrap().unwrap(),
-            "git+https://example.com/fleet.git?ref=jj/abcdefgh#ogygiaConfigurations.\"mac\".config.ogygia.nebula.settings"
+            "git+https://example.com/fleet.git?ref=jj/abcdefgh#ogygiaConfigurations.\"mac\".config.ogygia.nebula"
         );
     }
 
