@@ -13,6 +13,9 @@ struct SettingsView: View {
         case general
         case fleet
         case nebulaOverview
+        case nebulaMesh
+        case nebulaPeers
+        case nebulaConfig
     }
 
     var body: some View {
@@ -25,6 +28,12 @@ struct SettingsView: View {
                 Section("Nebula") {
                     Label("Overview", systemImage: "point.3.connected.trianglepath.dotted")
                         .tag(Pane.nebulaOverview)
+                    Label("Mesh", systemImage: "circle.hexagongrid")
+                        .tag(Pane.nebulaMesh)
+                    Label("Peers", systemImage: "list.bullet")
+                        .tag(Pane.nebulaPeers)
+                    Label("Config", systemImage: "slider.horizontal.3")
+                        .tag(Pane.nebulaConfig)
                 }
             }
             .navigationSplitViewColumnWidth(190)
@@ -37,6 +46,12 @@ struct SettingsView: View {
                 FleetSettingsView(nebula: nebula)
             case .nebulaOverview:
                 NebulaOverviewView(nebula: nebula)
+            case .nebulaMesh:
+                NebulaMeshView(nebula: nebula)
+            case .nebulaPeers:
+                NebulaPeersView()
+            case .nebulaConfig:
+                NebulaConfigView(nebula: nebula)
             }
         }
         .frame(minWidth: 680, minHeight: 440)

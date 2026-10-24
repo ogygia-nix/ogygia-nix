@@ -12,6 +12,8 @@
 //! neutral so they are tested everywhere; everything that touches the system
 //! is macOS only.
 
+pub mod config;
+pub mod mesh;
 pub mod protocol;
 pub mod render;
 pub mod report;
@@ -19,6 +21,8 @@ pub mod settings;
 
 #[cfg(target_os = "macos")]
 pub mod daemon;
+#[cfg(target_os = "macos")]
+mod debug;
 #[cfg(target_os = "macos")]
 mod peer;
 #[cfg(target_os = "macos")]

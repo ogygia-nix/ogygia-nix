@@ -1,7 +1,8 @@
 # Evaluates ogygia-managed Nebula for a device with no system configuration,
 # such as a Mac running the Ogygia app. The result is an `ogygiaConfigurations`
 # entry: `ogygia nebula rekey` signs its cert like any NixOS host's, and the
-# device evaluates `config.ogygia.nebula.settings` for its Nebula config.
+# device evaluates `config.ogygia.nebula.settings` for its Nebula config, and
+# `topology` to name the hosts it shows.
 #
 # `name` is the device's identity in the mesh: its attribute name, its key in
 # `topology.hosts` and the name in its cert. `modules` set `ogygia.nebula.*`
