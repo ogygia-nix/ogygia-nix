@@ -8,8 +8,10 @@ publish = false
 [dependencies]
 anyhow = { workspace = true }
 clap = { workspace = true }
+libc = { workspace = true }
 ogygia-nix-eval = { path = "../ogygia-nix-eval" }
 reqwest = { workspace = true, features = ["blocking"] }
+serde_json = { workspace = true }
 
 [[bin]]
 name = "ogygia-nix-eval"
