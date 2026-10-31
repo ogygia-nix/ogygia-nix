@@ -661,7 +661,8 @@ struct PreSet {
 
 enum PreAttr {
     Expr(ast::Expr),
-    Nested(PreSet),
+    /// A set merged from several definitions, and whether it is `rec`.
+    Nested(PreSet, bool),
     /// `inherit name;`, resolved in the enclosing scope.
     Inherit(Sym, u32),
     /// `inherit (froms[i]) name;`
@@ -1208,7 +1209,7 @@ impl<'a> Compiler<'a> {
             } else {
                 let mut nested = PreSet::default();
                 c.insert_path(&mut nested, rest, value)?;
-                Ok(PreAttr::Nested(nested))
+                Ok(PreAttr::Nested(nested, false))
             }
         };
         let name = match self.attr_name(&path[0])? {
@@ -1231,25 +1232,24 @@ impl<'a> Compiler<'a> {
                 self.at(off)
             ))
         };
-        // Two definitions merge only when both are plain attribute sets:
-        // `a.b = 1; a.c = 2;` or `a = { b = 1; }; a.c = 2;`.
-        if let PreAttr::Expr(ast::Expr::AttrSet(lit)) = existing
-            && lit.rec_token().is_none()
-        {
+        // Two definitions merge only when both are attribute sets:
+        // `a.b = 1; a.c = 2;` or `a = { b = 1; }; a.c = 2;`. The merged set
+        // is `rec` exactly when the first definition is a `rec` literal.
+        if let PreAttr::Expr(ast::Expr::AttrSet(lit)) = existing {
             let mut nested = PreSet::default();
             for entry in lit.entries() {
                 self.merge_entry(&mut nested, entry)?;
             }
-            *existing = PreAttr::Nested(nested);
+            *existing = PreAttr::Nested(nested, lit.rec_token().is_some());
         }
-        let PreAttr::Nested(nested) = existing else {
+        let PreAttr::Nested(nested, _) = existing else {
             return already();
         };
         if !rest.is_empty() {
             return self.insert_path(nested, rest, value);
         }
         match value {
-            ast::Expr::AttrSet(lit) if lit.rec_token().is_none() => {
+            ast::Expr::AttrSet(lit) => {
                 for entry in lit.entries() {
                     self.merge_entry(nested, entry)?;
                 }
@@ -1267,8 +1267,8 @@ impl<'a> Compiler<'a> {
                 self.leak(Expr::Lambda(def))
             }
             PreAttr::Expr(e) => self.expr(&e)?,
-            PreAttr::Nested(set) => {
-                let e = self.attrs(set, false)?;
+            PreAttr::Nested(set, recursive) => {
+                let e = self.attrs(set, recursive)?;
                 self.leak(e)
             }
             PreAttr::Inherit(..) | PreAttr::InheritFrom(..) => {
