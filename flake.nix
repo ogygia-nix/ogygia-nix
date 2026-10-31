@@ -270,6 +270,26 @@
               '';
             });
 
+            # Evaluates like `nix eval`, for trying ogygia-nix-eval by hand.
+            ogygia-nix-eval = craneLib.buildPackage (individualCrateArgs // {
+              pname = "ogygia-nix-eval";
+              cargoExtraArgs = "-p ogygia-nix-eval-cli";
+              src = lib.fileset.toSource {
+                root = ./.;
+                fileset = lib.fileset.unions [
+                  ./Cargo.toml
+                  ./Cargo.lock
+                  (craneLib.fileset.commonCargoSources ./src/ogygia-nix-eval-cli)
+                  (craneLib.fileset.commonCargoSources ./src/ogygia-nix-eval)
+                ];
+              };
+              env = {
+                OGYGIA_NIX_EVAL_DEFAULT_INCLUDE_PATH = "${nixIncludePath}";
+                OGYGIA_NIX_EVAL_NIX_VERSION = referenceNix.version;
+              };
+              meta.mainProgram = "ogygia-nix-eval";
+            });
+
             # cargo nextest archive builds with the test profile, so its
             # dependencies are cached separately from the release ones.
             testCargoArtifacts = craneLib.buildDepsOnly (commonArgs // {
@@ -388,7 +408,7 @@
           in
           {
             packages = {
-              inherit ogygia ogygia-nextest-archive;
+              inherit ogygia ogygia-nextest-archive ogygia-nix-eval;
               reference-nix = referenceNix;
               default = ogygia;
             } // lib.optionalAttrs (system == "aarch64-darwin") {

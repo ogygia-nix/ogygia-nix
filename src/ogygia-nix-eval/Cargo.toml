@@ -34,7 +34,6 @@ strum = { workspace = true }
 
 [dev-dependencies]
 libtest-mimic = { workspace = true }
-reqwest = { workspace = true, features = ["blocking"] }
 tempfile = { workspace = true }
 
 [[test]]

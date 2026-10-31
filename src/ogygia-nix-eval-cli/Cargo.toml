@@ -1,0 +1,16 @@
+[package]
+name = "ogygia-nix-eval-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+ogygia-nix-eval = { path = "../ogygia-nix-eval" }
+reqwest = { workspace = true, features = ["blocking"] }
+
+[[bin]]
+name = "ogygia-nix-eval"
+path = "src/main.rs"

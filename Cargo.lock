@@ -3344,7 +3344,6 @@ dependencies = [
  "num-bigint",
  "regex",
  "regex-automata",
- "reqwest",
  "rnix",
  "rowan",
  "sha1",
@@ -3357,6 +3356,16 @@ dependencies = [
  "toml_parser",
  "zip",
  "zstd",
+]
+
+[[package]]
+name = "ogygia-nix-eval-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "ogygia-nix-eval",
+ "reqwest",
 ]
 
 [[package]]
