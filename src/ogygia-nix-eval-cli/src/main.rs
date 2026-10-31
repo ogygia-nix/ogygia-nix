@@ -9,6 +9,11 @@ use ogygia_nix_eval::Fetcher;
 use ogygia_nix_eval::FlakeEnv;
 use ogygia_nix_eval::Settings;
 
+mod stats;
+
+#[global_allocator]
+static ALLOC: stats::Counting = stats::Counting;
+
 /// Evaluate with ogygia-nix-eval as `nix` does. Flags `nix` has but this
 /// does not are refused.
 #[derive(Parser)]
@@ -55,16 +60,38 @@ fn store(url: &str) -> Result<Store, String> {
 }
 
 /// Downloads over HTTP.
-struct Http(reqwest::blocking::Client);
+#[derive(Default)]
+struct Http(std::sync::OnceLock<reqwest::blocking::Client>);
 
 impl Fetcher for Http {
     fn get(&self, url: &str) -> anyhow::Result<Vec<u8>> {
-        let response = self.0.get(url).send()?.error_for_status()?;
+        let response = self
+            .0
+            .get_or_init(reqwest::blocking::Client::new)
+            .get(url)
+            .send()?
+            .error_for_status()?;
         Ok(response.bytes()?.to_vec())
     }
 }
 
+/// Prints the statistics if `NIX_SHOW_STATS` is set and not `0`: to the
+/// file `NIX_SHOW_STATS_PATH` names if it is set and not `-`, otherwise to
+/// stderr.
+fn show_stats(instructions: Option<&stats::Instructions>) {
+    if *stats::ENABLED {
+        let stats = stats::json(instructions).to_string();
+        match std::env::var("NIX_SHOW_STATS_PATH") {
+            Ok(path) if path != "-" => {
+                std::fs::write(&path, stats).expect("writing NIX_SHOW_STATS_PATH")
+            }
+            _ => eprintln!("{stats}"),
+        }
+    }
+}
+
 fn main() -> ExitCode {
+    let instructions = stats::ENABLED.then(stats::Instructions::start).flatten();
     let Command::Eval {
         installable,
         apply,
@@ -74,17 +101,20 @@ fn main() -> ExitCode {
     let env = FlakeEnv {
         cwd: std::env::current_dir().expect("current directory"),
         store: store.map_or_else(|| Some(PathBuf::from("/nix/store")), |s| s.0),
-        fetcher: Some(Box::new(Http(reqwest::blocking::Client::new()))),
+        fetcher: Some(Box::<Http>::default()),
     };
     let apply = apply.as_deref().unwrap_or("x: x");
-    match ogygia_nix_eval::eval_flake_json(&installable, apply, &env, Settings::default()) {
-        Ok(s) => {
-            println!("{s}");
-            ExitCode::SUCCESS
-        }
-        Err(e) => {
-            eprintln!("{e}");
-            ExitCode::FAILURE
-        }
-    }
+    let code =
+        match ogygia_nix_eval::eval_flake_json(&installable, apply, &env, Settings::default()) {
+            Ok(s) => {
+                println!("{s}");
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                ExitCode::FAILURE
+            }
+        };
+    show_stats(instructions.as_ref());
+    code
 }

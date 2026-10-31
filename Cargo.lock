@@ -3364,8 +3364,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "libc",
  "ogygia-nix-eval",
  "reqwest",
+ "serde_json",
 ]
 
 [[package]]
