@@ -8,8 +8,15 @@ use lasso::ThreadedRodeo;
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Sym(Spur);
 
-#[derive(Default)]
-pub struct Interner(ThreadedRodeo);
+pub struct Interner(
+    ThreadedRodeo<Spur, std::hash::BuildHasherDefault<std::collections::hash_map::DefaultHasher>>,
+);
+
+impl Default for Interner {
+    fn default() -> Self {
+        Self(ThreadedRodeo::with_hasher(Default::default()))
+    }
+}
 
 impl Interner {
     pub fn intern(&self, name: &str) -> Sym {
