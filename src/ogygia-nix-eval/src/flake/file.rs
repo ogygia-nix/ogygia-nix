@@ -174,6 +174,12 @@ fn input_spec<'a>(ev: &Eval<'a>, name: &str, field: Field<'a>, top: bool) -> R<'
         }
     }
     spec.attrs = match url {
+        // Beside a type, the URL is an attribute like any other rather
+        // than a flake reference.
+        Some(url) if extra.contains_key("type") => {
+            extra.insert("url".to_owned(), Attr::Str(url));
+            Some(extra)
+        }
         Some(url) => {
             let mut attrs = flakeref::parse(&url, None).map_err(anyhow_err)?;
             attrs.extend(extra);

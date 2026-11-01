@@ -1,0 +1,17 @@
+#~flake path:@dir(root)#x
+#~lock
+#~tree root path
+#~file flake.nix
+{
+  inputs = {
+    f = { type = "file"; url = "file://@dir(root)/f.txt#a?b"; flake = false; };
+    q = { type = "file"; url = "file:@dir(root)/f.txt?dir=d"; flake = false; };
+    g = { type = "git"; url = "file://@dir(g)#c"; flake = false; };
+  };
+  outputs = { self, f, q, g }: { x = [ (builtins.readFile f) (builtins.readFile q) (builtins.readDir g) ]; };
+}
+#~file f.txt
+hello
+#~tree g git
+#~file a
+a
