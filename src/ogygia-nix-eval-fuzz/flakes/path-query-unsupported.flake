@@ -1,0 +1,4 @@
+#~flake ?a=b#x
+#~tree root path
+#~file flake.nix
+{ outputs = _: { x = 3; }; }

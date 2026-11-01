@@ -11,7 +11,7 @@ mod lists;
 mod misc;
 pub(crate) mod regex;
 mod strings;
-mod url;
+pub(crate) mod url;
 mod xml;
 
 use std::cell::Cell;

@@ -545,18 +545,21 @@ fn from_store(io: &Io, locked: &Attrs) -> Result<Option<Source>> {
 }
 
 /// The absolute path a `file:` URL with no host names, such as `/r` for
-/// `file:/r` or `file:///r`.
-fn file_url_path(url: &str) -> Option<&str> {
+/// `file:/r` or `file:///r?q`, decoded.
+fn file_url_path(url: &str) -> Option<PathBuf> {
     let rest = url.strip_prefix("file:")?;
     let path = rest.strip_prefix("//").unwrap_or(rest);
-    path.starts_with('/').then_some(path)
+    let path = path.split_once('?').map_or(path, |(p, _)| p);
+    let path = crate::builtins::url::decode(path.as_bytes());
+    path.starts_with(b"/")
+        .then(|| PathBuf::from(OsStr::from_bytes(&path)))
 }
 
 /// The contents of the file at `url`: read directly for a local `file:`
 /// URL, and downloaded by `env`'s fetcher otherwise.
 fn download(env: &FlakeEnv, url: &str) -> Result<Vec<u8>> {
     if let Some(path) = file_url_path(url) {
-        return std::fs::read(path).with_context(|| format!("reading '{path}'"));
+        return std::fs::read(&path).with_context(|| format!("reading '{}'", path.display()));
     }
     match &env.fetcher {
         Some(fetcher) => fetcher
@@ -637,8 +640,8 @@ pub fn fetch(io: &Io, env: &FlakeEnv, attrs: &Attrs, what: &str) -> Result<Sourc
         }
         ("git", Some(dir)) => {
             return match flakeref::get_str(attrs, "rev") {
-                Some(rev) => fetch_git_rev(io, Path::new(dir), rev, attrs, what),
-                None => fetch_git_worktree(io, Path::new(dir), what),
+                Some(rev) => fetch_git_rev(io, &dir, rev, attrs, what),
+                None => fetch_git_worktree(io, &dir, what),
             };
         }
         ("indirect", _) => bail!(

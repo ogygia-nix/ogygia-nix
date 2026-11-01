@@ -9,6 +9,7 @@ pub(crate) mod source;
 use std::cell::OnceCell;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -249,23 +250,27 @@ fn git_root(dir: &Path) -> Option<&Path> {
 }
 
 /// The flake reference of an installable, made absolute against `cwd`.
+/// A path within a Git repository's working tree is a `git+file:` reference
+/// to the repository, and its query is that reference's.
 fn installable_ref(flake: &str, cwd: &Path) -> anyhow::Result<Attrs> {
-    let mut attrs = flakeref::parse(flake, Some(cwd))?;
     if !crate::builtins::flake::is_path(flake.as_bytes()) {
-        return Ok(attrs);
+        return flakeref::parse(flake, Some(cwd));
     }
+    let (base, query) = match flake.split_once('?') {
+        Some((base, query)) => (base, format!("?{query}")),
+        None => (flake, String::new()),
+    };
+    let attrs = flakeref::parse(base, Some(cwd))?;
     let dir = PathBuf::from(flakeref::get_str(&attrs, "path").unwrap_or(""));
-    if let Some(root) = git_root(&dir) {
-        let sub = dir.strip_prefix(root).unwrap_or(Path::new(""));
-        attrs.remove("path");
-        attrs.insert("type".to_owned(), Attr::Str("git".to_owned()));
-        attrs.insert(
-            "url".to_owned(),
-            Attr::Str(format!("file://{}", root.display())),
-        );
-        if !sub.as_os_str().is_empty() {
-            attrs.insert("dir".to_owned(), Attr::Str(sub.display().to_string()));
-        }
+    let Some(root) = git_root(&dir) else {
+        return flakeref::parse(flake, Some(cwd));
+    };
+    let root_url = crate::builtins::url::encode(root.as_os_str().as_bytes(), b"/");
+    let url = format!("git+file://{}{query}", String::from_utf8_lossy(&root_url));
+    let mut attrs = flakeref::parse(&url, None)?;
+    let sub = dir.strip_prefix(root).unwrap_or(Path::new(""));
+    if !sub.as_os_str().is_empty() {
+        attrs.insert("dir".to_owned(), Attr::Str(sub.display().to_string()));
     }
     Ok(attrs)
 }

@@ -48,19 +48,19 @@ pub fn parse_flake_ref<'a>(ev: &Eval<'a>, flake_ref: Value<'a>) -> R<'a> {
     ))
 }
 
-enum Attr {
+pub(crate) enum Attr {
     Str(Vec<u8>),
     Int(i64),
     Bool(bool),
 }
 
-type Attrs = Vec<(&'static str, Attr)>;
+pub(crate) type Attrs = Vec<(&'static str, Attr)>;
 
-type Params = BTreeMap<Vec<u8>, Vec<u8>>;
+pub(crate) type Params = BTreeMap<Vec<u8>, Vec<u8>>;
 
 /// The attributes of the flake reference `r`. Without `flakes`, it must be
 /// the URL of a Git, Mercurial, tarball or file input.
-fn url_ref(r: &[u8], flakes: bool) -> Result<Attrs, String> {
+pub(crate) fn url_ref(r: &[u8], flakes: bool) -> Result<Attrs, String> {
     let shown = String::from_utf8_lossy(r);
     let (r, fragment) = split_once(r, b'#').unwrap_or((r, b""));
     if !fragment.is_empty() {
@@ -221,7 +221,7 @@ fn file_with_host(uri: &url::Uri<'_>) -> bool {
 
 /// The parameters of the URL query `query`, decoded. The first of
 /// parameters with the same name wins, and one without `=` is ignored.
-fn params(query: &[u8]) -> Result<Params, String> {
+pub(crate) fn params(query: &[u8]) -> Result<Params, String> {
     if !url::chars(query, |c| url::pchar(c) || b"/? \"[]".contains(&c)) {
         return Err(format!(
             "invalid URI query '{}'",
@@ -276,7 +276,7 @@ fn is_rev(s: &[u8]) -> bool {
 
 /// A `path:` reference to `path`, or a bare absolute path unless `decode`.
 /// Runs of slashes become one, and an empty path is the root.
-fn path_ref(path: &[u8], decode: bool, mut params: Params, shown: &str) -> Result<Attrs, String> {
+fn path_ref(path: &[u8], decode: bool, params: Params, shown: &str) -> Result<Attrs, String> {
     let mut p = Vec::new();
     for (i, segment) in path.split(|&c| c == b'/').enumerate() {
         let segment = if decode {
@@ -304,7 +304,16 @@ fn path_ref(path: &[u8], decode: bool, mut params: Params, shown: &str) -> Resul
     if p.is_empty() {
         p.push(b'/');
     }
-    let mut attrs = vec![("type", Attr::Str(b"path".into())), ("path", Attr::Str(p))];
+    path_attrs(p, params, shown)
+}
+
+/// A `path:` reference to `path` as given, with the parameters `params` of
+/// the URL shown as `shown`, all of which a path input must support.
+pub(crate) fn path_attrs(path: Vec<u8>, mut params: Params, shown: &str) -> Result<Attrs, String> {
+    let mut attrs = vec![
+        ("type", Attr::Str(b"path".into())),
+        ("path", Attr::Str(path)),
+    ];
     dir_attr(&mut attrs, &mut params);
     for (k, v) in params {
         let attr = match &k[..] {

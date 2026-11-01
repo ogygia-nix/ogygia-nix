@@ -7,6 +7,7 @@ use std::path::Path;
 use anyhow::Result;
 use anyhow::bail;
 
+use crate::builtins::flake;
 use crate::value::Value;
 
 /// The value of an attribute of an input.
@@ -49,17 +50,6 @@ pub fn get_int(attrs: &Attrs, name: &str) -> Option<u64> {
     }
 }
 
-/// Attributes whose values in a URL's query are integers.
-const INT_ATTRS: &[&str] = &["lastModified", "revCount"];
-
-/// Attributes whose values in a URL's query are Booleans.
-const BOOL_ATTRS: &[&str] = &["submodules", "shallow", "lfs", "exportIgnore", "allRefs"];
-
-/// Archive extensions that make an `http`, `https` or `file` URL a tarball.
-const ARCHIVES: &[&str] = &[
-    ".zip", ".tar", ".tgz", ".tar.gz", ".tar.xz", ".tar.bz2", ".tar.zst",
-];
-
 pub(crate) fn percent_decode(s: &str) -> Result<String> {
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
@@ -83,121 +73,40 @@ pub(crate) fn percent_decode(s: &str) -> Result<String> {
     String::from_utf8(out).map_err(|_| anyhow::anyhow!("invalid URI parameter '{s}'"))
 }
 
-/// Add the parameters of the query string `query` to `attrs`.
-fn add_query(attrs: &mut Attrs, query: &str) -> Result<()> {
-    for param in query.split('&').filter(|p| !p.is_empty()) {
-        let (name, value) = param.split_once('=').unwrap_or((param, ""));
-        let name = percent_decode(name)?;
-        let value = percent_decode(value)?;
-        let attr = if INT_ATTRS.contains(&name.as_str()) {
-            match value.parse() {
-                Ok(i) => Attr::Int(i),
-                Err(_) => bail!("invalid value '{value}' for attribute '{name}'"),
-            }
-        } else if BOOL_ATTRS.contains(&name.as_str()) {
-            Attr::Bool(value == "1" || value == "true")
-        } else {
-            Attr::Str(value)
-        };
-        attrs.insert(name, attr);
-    }
-    Ok(())
-}
-
-fn str_attr(attrs: &mut Attrs, name: &str, value: impl Into<String>) {
-    attrs.insert(name.to_owned(), Attr::Str(value.into()));
-}
-
-fn is_hex_rev(s: &str) -> bool {
-    s.len() == 40 && s.bytes().all(|b| b.is_ascii_hexdigit())
-}
-
-/// The URL scheme `url` starts with, if any.
-fn scheme(url: &str) -> Option<(&str, &str)> {
-    let (scheme, rest) = url.split_once(':')?;
-    let mut chars = scheme.chars();
-    let first = chars.next()?;
-    (first.is_ascii_alphabetic() && chars.all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c)))
-        .then_some((scheme, rest))
-}
-
 /// Parse a flake reference as written in a flake's inputs or on the command
-/// line. Relative paths are kept as written when `cwd` is `None`, and
+/// line, as `builtins.parseFlakeRef` does, except that a path may be
+/// relative. Relative paths are kept as written when `cwd` is `None`, and
 /// otherwise made absolute against it.
 pub fn parse(url: &str, cwd: Option<&Path>) -> Result<Attrs> {
-    let mut attrs = Attrs::new();
-    let (url_part, query) = url.split_once('?').unwrap_or((url, ""));
-    match scheme(url_part) {
-        _ if crate::builtins::flake::is_path(url.as_bytes()) => {
-            let mut path = String::new();
-            for c in url_part.chars() {
-                if !(c == '/' && path.ends_with('/')) {
-                    path.push(c);
-                }
+    let r = url.as_bytes();
+    let parsed = if flake::is_path(r) {
+        let (base, query) = url.split_once('?').unwrap_or((url, ""));
+        let mut path = String::new();
+        for c in base.chars() {
+            if !(c == '/' && path.ends_with('/')) {
+                path.push(c);
             }
-            str_attr(&mut attrs, "type", "path");
-            str_attr(&mut attrs, "path", resolve(&path, cwd));
         }
-        Some(("path", path)) => {
-            str_attr(&mut attrs, "type", "path");
-            str_attr(&mut attrs, "path", resolve(path, cwd));
-        }
-        Some(("flake", id)) => indirect(&mut attrs, id, url)?,
-        Some((s @ ("github" | "gitlab" | "sourcehut"), rest)) => {
-            let mut parts = rest.split('/');
-            let (Some(owner), Some(repo)) = (parts.next(), parts.next()) else {
-                bail!("'{url}' is not a valid URL");
+        flake::params(query.as_bytes()).and_then(|p| flake::path_attrs(path.into_bytes(), p, url))
+    } else {
+        flake::url_ref(r, true)
+    };
+    let mut attrs: Attrs = parsed
+        .map_err(anyhow::Error::msg)?
+        .into_iter()
+        .map(|(name, attr)| {
+            let attr = match attr {
+                flake::Attr::Str(s) => Attr::Str(String::from_utf8_lossy(&s).into_owned()),
+                flake::Attr::Int(i) => Attr::Int(i as u64),
+                flake::Attr::Bool(b) => Attr::Bool(b),
             };
-            str_attr(&mut attrs, "type", s);
-            str_attr(&mut attrs, "owner", owner);
-            str_attr(&mut attrs, "repo", repo);
-            let rest: Vec<&str> = parts.collect();
-            if !rest.is_empty() {
-                let r = rest.join("/");
-                str_attr(&mut attrs, if is_hex_rev(&r) { "rev" } else { "ref" }, r);
-            }
-        }
-        Some((s, rest)) if s.starts_with("git+") => {
-            str_attr(&mut attrs, "type", "git");
-            str_attr(&mut attrs, "url", format!("{}:{rest}", &s[4..]));
-        }
-        Some((s, rest)) if s.starts_with("tarball+") || s.starts_with("file+") => {
-            let (kind, inner) = s.split_once('+').expect("checked above");
-            str_attr(
-                &mut attrs,
-                "type",
-                if kind == "file" { "file" } else { "tarball" },
-            );
-            str_attr(&mut attrs, "url", format!("{inner}:{rest}"));
-        }
-        Some((s @ ("http" | "https" | "file"), rest)) => {
-            let archive = ARCHIVES.iter().any(|e| url_part.ends_with(e));
-            str_attr(&mut attrs, "type", if archive { "tarball" } else { "file" });
-            str_attr(&mut attrs, "url", format!("{s}:{rest}"));
-        }
-        Some((s, _)) => bail!("input type '{s}' is unsupported"),
-        None => indirect(&mut attrs, url_part, url)?,
+            (name.to_owned(), attr)
+        })
+        .collect();
+    if let Some(Attr::Str(path)) = attrs.get_mut("path") {
+        *path = resolve(path, cwd);
     }
-    add_query(&mut attrs, query)?;
     Ok(attrs)
-}
-
-fn indirect(attrs: &mut Attrs, id: &str, url: &str) -> Result<()> {
-    let (id, rest) = id.split_once('/').unwrap_or((id, ""));
-    if id.is_empty()
-        || !id.starts_with(|c: char| c.is_ascii_alphabetic())
-        || !id
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-    {
-        bail!("'{url}' is not a valid URL");
-    }
-    str_attr(attrs, "type", "indirect");
-    str_attr(attrs, "id", id);
-    if !rest.is_empty() {
-        str_attr(attrs, if is_hex_rev(rest) { "rev" } else { "ref" }, rest);
-    }
-    Ok(())
 }
 
 /// `path` against `cwd`, if given and `path` is relative, with `.` and `..`
@@ -314,6 +223,21 @@ mod tests {
         assert_eq!(
             parse("./a/../b", Some(Path::new("/c"))).unwrap(),
             s(&[("type", "path"), ("path", "/c/b")])
+        );
+    }
+
+    #[test]
+    fn checks_query_parameters_by_type() {
+        assert_eq!(
+            parse("?a&%64ir=d&dir=e", Some(Path::new("/c"))).unwrap(),
+            s(&[("type", "path"), ("path", "/c"), ("dir", "d")])
+        );
+        assert!(parse("?a=b", Some(Path::new("/c"))).is_err());
+        assert!(parse("path:./x?ref=r", None).is_err());
+        assert!(parse("github:o/r?a=b", None).is_err());
+        assert_eq!(
+            parse("git+file:///r?a=b&ref=c", None).unwrap(),
+            s(&[("type", "git"), ("url", "file:///r?a=b"), ("ref", "c")])
         );
     }
 }
