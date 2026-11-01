@@ -7,6 +7,14 @@ pub struct Uri<'s> {
     pub path: &'s [u8],
 }
 
+impl Uri<'_> {
+    /// Whether the scheme is `file`, perhaps after a `+`, and there is a host.
+    pub fn file_with_host(&self) -> bool {
+        let scheme = split_once(self.scheme, b'+').map_or(self.scheme, |(_, s)| s);
+        scheme == b"file" && self.authority.as_ref().is_some_and(|a| !a.host.is_empty())
+    }
+}
+
 pub struct Authority<'s> {
     pub userinfo: Option<&'s [u8]>,
     /// A registered name, or an IP literal with its brackets.
