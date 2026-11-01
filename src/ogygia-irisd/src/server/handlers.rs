@@ -166,14 +166,20 @@ async fn try_local_store_narinfo(state: &AppState, hash: &str) -> Option<NarInfo
 ///
 /// Path format: `nar/{nar_hash}/{store_hash}-{name}.nar.zst`
 /// The NarHash in the URL makes requests self-describing so we don't need
-/// server-side state to match narinfo responses to NAR content.
-pub async fn get_nar(State(state): State<Arc<AppState>>, Path(path): Path<String>) -> Response {
+/// server-side state to match narinfo responses to NAR content. Supports
+/// `Range` requests when the NAR is served from the local store.
+pub async fn get_nar(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(path): Path<String>,
+) -> Response {
     let Some((nar_hash, hash)) = parse_nar_path(&path) else {
         tracing::warn!("Invalid NAR path format: {}", path);
         return (StatusCode::NOT_FOUND, "Not found").into_response();
     };
 
-    let local = try_local_store_nar(&state, hash, nar_hash, None).await;
+    let range = parse_byte_range(&headers);
+    let local = try_local_store_nar(&state, hash, nar_hash, range).await;
     if local.status() != StatusCode::NOT_FOUND {
         return local;
     }
@@ -326,6 +332,7 @@ async fn try_local_store_nar(
                     ("content-type", "application/zstd"),
                     ("content-length", content_length.as_str()),
                     ("content-range", content_range.as_str()),
+                    ("accept-ranges", "bytes"),
                     ("x-ogygia-nar-file-hash", file_hash.as_str()),
                 ],
                 body,
@@ -341,6 +348,7 @@ async fn try_local_store_nar(
                 [
                     ("content-type", "application/zstd"),
                     ("content-length", content_length.as_str()),
+                    ("accept-ranges", "bytes"),
                     ("x-ogygia-nar-file-hash", file_hash.as_str()),
                 ],
                 body,
