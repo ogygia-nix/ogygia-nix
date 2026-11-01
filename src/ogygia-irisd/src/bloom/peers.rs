@@ -11,6 +11,9 @@ use std::time::Duration;
 use anyhow::Context;
 use anyhow::Result;
 use fastbloom::BloomFilter;
+use futures::FutureExt;
+use futures::future::BoxFuture;
+use futures::future::Shared;
 use rand::seq::SliceRandom;
 use tokio::sync::RwLock;
 use tokio::sync::RwLockReadGuard;
@@ -25,11 +28,15 @@ enum Freshness {
     Expired,
 }
 
+/// Completes when a background bloom refresh has finished, whatever its outcome.
+type Refresh = Shared<BoxFuture<'static, ()>>;
+
 #[derive(Default)]
 struct PeerBloomEntry {
     bloom: Option<BloomFilter>,
     fetched_at: Option<Instant>,      // last *successful* fetch
     last_attempt_at: Option<Instant>, // last fetch attempt (success or failure)
+    refresh: Option<Refresh>,         // in-flight background refresh
 }
 
 impl PeerBloomEntry {
@@ -149,7 +156,9 @@ impl PeerBlooms {
     ///
     /// Each peer's bloom is refreshed if stale (same double-check pattern
     /// as `ensure_fresh`), and matching URLs are sent through the channel
-    /// as soon as they're ready — without waiting for all peers.
+    /// as soon as they're ready — without waiting for all peers. A peer whose
+    /// stale bloom misses `hash` is sent later if its background refresh then
+    /// matches; the channel stays open until those refreshes finish.
     pub async fn lookup_stream(
         &self,
         peer_urls: &[String],
@@ -179,8 +188,21 @@ impl PeerBlooms {
                 )
                 .await;
 
-                if guard.bloom.as_ref().is_some_and(|b| b.contains(&hash)) {
-                    let _ = tx.send(url);
+                let matches =
+                    |e: &PeerBloomEntry| e.bloom.as_ref().is_some_and(|b| b.contains(&hash));
+                if matches(&guard) {
+                    drop(tx.send(url));
+                    return;
+                }
+
+                // A stale "no" may turn into "yes" once the refresh lands.
+                let Some(refresh) = guard.refresh.clone() else {
+                    return;
+                };
+                drop(guard);
+                refresh.await;
+                if matches(&*entry.read().await) {
+                    drop(tx.send(url));
                 }
             });
         }
@@ -341,16 +363,18 @@ async fn ensure_peer_fresh<'a>(
         Freshness::Fresh => return guard.downgrade(),
         Freshness::Stale if guard.recently_attempted(ttl) => return guard.downgrade(),
         Freshness::Stale => {
-            // Stale-while-revalidate: serve stale data, spawn background refresh.
+            // Stale-while-revalidate: serve stale data, spawn background
+            // refresh. The refresh is its own task so it finishes even if
+            // every caller waiting on it goes away.
             guard.last_attempt_at = Some(Instant::now());
-            let read_guard = guard.downgrade();
 
             let entry_clone = Arc::clone(entry);
             let client = client.clone();
             let url = url.to_string();
-            tokio::spawn(async move {
+            let task = tokio::spawn(async move {
                 let result = fetch_bloom(&url, &client, expected_bits, num_hashes).await;
                 let mut guard = entry_clone.write().await;
+                guard.refresh = None;
                 match result {
                     Ok(bloom) => {
                         guard.bloom = Some(bloom);
@@ -361,8 +385,11 @@ async fn ensure_peer_fresh<'a>(
                     }
                 }
             });
+            // Set while still holding the write lock, so the task can't clear
+            // it before it is stored.
+            guard.refresh = Some(task.map(drop).boxed().shared());
 
-            return read_guard;
+            return guard.downgrade();
         }
         Freshness::Expired if guard.recently_attempted(ttl) => {
             guard.bloom = None;
@@ -445,6 +472,7 @@ mod tests {
             bloom: None,
             fetched_at: Some(Instant::now()),
             last_attempt_at: None,
+            refresh: None,
         };
         let ttl = Duration::from_secs(5);
         let max_age = Duration::from_secs(10);
@@ -457,6 +485,7 @@ mod tests {
             bloom: None,
             fetched_at: Some(Instant::now()),
             last_attempt_at: None,
+            refresh: None,
         };
         let ttl = Duration::from_secs(5);
         let max_age = Duration::from_secs(10);
@@ -470,6 +499,7 @@ mod tests {
             bloom: None,
             fetched_at: Some(Instant::now()),
             last_attempt_at: None,
+            refresh: None,
         };
         let ttl = Duration::from_secs(5);
         let max_age = Duration::from_secs(10);
@@ -483,6 +513,7 @@ mod tests {
             bloom: None,
             fetched_at: None,
             last_attempt_at: None,
+            refresh: None,
         };
         let ttl = Duration::from_secs(5);
         let max_age = Duration::from_secs(10);
@@ -567,11 +598,123 @@ mod tests {
             bloom: None,
             fetched_at: Some(Instant::now()),
             last_attempt_at: None,
+            refresh: None,
         };
         let ttl = Duration::from_secs(5);
         let max_age = Duration::from_secs(5); // same as ttl — no stale window
         tokio::time::advance(Duration::from_secs(6)).await;
         // Should be Expired directly — no Stale state possible
         assert!(matches!(entry.freshness(ttl, max_age), Freshness::Expired));
+    }
+
+    const HASH: &str = "abc123def456ghi789jkl012mno345pq";
+    const TTL: Duration = Duration::from_secs(5);
+    const MAX_AGE: Duration = Duration::from_secs(600);
+
+    fn local_bloom(hashes: &[&str]) -> LocalBloom {
+        let local = LocalBloom::new(0.01, 0.1);
+        for hash in hashes {
+            local.insert(hash);
+        }
+        local.finish_rebuild();
+        local
+    }
+
+    /// `PeerBlooms` holding a stale bloom without `HASH` for `url`.
+    async fn stale_peer_blooms(url: &str) -> (PeerBlooms, Arc<RwLock<PeerBloomEntry>>) {
+        let local = local_bloom(&[]);
+        let data = local.serialize().unwrap().unwrap();
+        let bloom = deserialize_bloom(&data, local.num_bits(), local.num_hashes()).unwrap();
+        let peer_blooms = PeerBlooms::new(TTL, MAX_AGE, local.num_bits(), local.num_hashes());
+        let entry = Arc::new(RwLock::new(PeerBloomEntry {
+            bloom: Some(bloom),
+            fetched_at: Some(Instant::now() - TTL * 2),
+            ..Default::default()
+        }));
+        peer_blooms
+            .peers
+            .write()
+            .await
+            .insert(url.to_string(), Arc::clone(&entry));
+        (peer_blooms, entry)
+    }
+
+    /// Answer one `GET /bloom` with a bloom containing `HASH`. Signals
+    /// `requested` once the request has arrived and holds the response until
+    /// `release` fires.
+    async fn serve_bloom_once(
+        listener: tokio::net::TcpListener,
+        requested: tokio::sync::oneshot::Sender<()>,
+        release: tokio::sync::oneshot::Receiver<()>,
+    ) {
+        use tokio::io::AsyncReadExt;
+        use tokio::io::AsyncWriteExt;
+
+        let body = local_bloom(&[HASH]).serialize().unwrap().unwrap();
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut request = Vec::new();
+        let mut buf = [0u8; 1024];
+        while !request.ends_with(b"\r\n\r\n") {
+            let n = socket.read(&mut buf).await.unwrap();
+            assert_ne!(n, 0, "connection closed before the request ended");
+            request.extend_from_slice(&buf[..n]);
+        }
+        requested.send(()).unwrap();
+        release.await.unwrap();
+        let header = format!(
+            "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+            body.len()
+        );
+        socket.write_all(header.as_bytes()).await.unwrap();
+        socket.write_all(&body).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_lookup_stream_sends_peer_after_stale_refresh_matches() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let (requested, _requested_rx) = tokio::sync::oneshot::channel();
+        let (release, release_rx) = tokio::sync::oneshot::channel();
+        release.send(()).unwrap();
+        tokio::spawn(serve_bloom_once(listener, requested, release_rx));
+
+        let (peer_blooms, _) = stale_peer_blooms(&url).await;
+        let mut rx = peer_blooms
+            .lookup_stream(std::slice::from_ref(&url), HASH, &reqwest::Client::new())
+            .await;
+
+        assert_eq!(rx.recv().await, Some(url));
+        assert_eq!(rx.recv().await, None);
+    }
+
+    #[tokio::test]
+    async fn test_stale_refresh_finishes_after_lookup_stream_dropped() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let (requested, requested_rx) = tokio::sync::oneshot::channel();
+        let (release, release_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(serve_bloom_once(listener, requested, release_rx));
+
+        let (peer_blooms, entry) = stale_peer_blooms(&url).await;
+        let rx = peer_blooms
+            .lookup_stream(std::slice::from_ref(&url), HASH, &reqwest::Client::new())
+            .await;
+
+        // Drop the only receiver while the refresh is mid-request.
+        requested_rx.await.unwrap();
+        drop(rx);
+        assert!(entry.read().await.refresh.is_some());
+        release.send(()).unwrap();
+        server.await.unwrap();
+
+        // Poll rather than await the refresh, so nothing here drives it.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while peer_blooms.lookup(HASH).await.is_empty() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("refresh did not finish");
+        assert!(entry.read().await.refresh.is_none());
     }
 }
