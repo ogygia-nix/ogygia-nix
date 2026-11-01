@@ -1,4 +1,3 @@
-use std::fmt;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
@@ -9,6 +8,8 @@ use anyhow::Result;
 use chrono::DateTime;
 use chrono::Utc;
 use git2::Oid;
+use serde::Deserialize;
+use serde::Serialize;
 use tracing::info;
 use tracing::warn;
 
@@ -17,13 +18,16 @@ use crate::canary::CanaryState;
 use crate::canary::CanaryTarget;
 use crate::canary::FinishReason;
 use crate::config::Config;
+use crate::control::Events;
+use crate::control::Step;
 use crate::repo::Repo;
 use crate::system::Activation;
 use crate::system::RealSystem;
 use crate::system::System;
 
 /// Result of one update cycle.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Outcome {
     /// The running and next-boot systems already match the branch tip.
     UpToDate,
@@ -52,52 +56,6 @@ pub enum Outcome {
     /// A scheduled cycle held the running trial in place, keeping the boot
     /// floor current without touching the running system.
     CanaryHeld { commit: String, next_boot: String },
-}
-
-impl fmt::Display for Outcome {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Outcome::UpToDate => write!(f, "system is up to date"),
-            Outcome::NotOnBranch { revision } => {
-                write!(
-                    f,
-                    "running revision {revision} is not on the tracked branch; not updating"
-                )
-            }
-            Outcome::Switched { commit } => write!(f, "switched to {commit}"),
-            Outcome::TestActivated { commit } => {
-                write!(f, "activated {commit} without changing the boot default")
-            }
-            Outcome::RebootScheduled { commit } => {
-                write!(f, "staged {commit} for boot and scheduled a reboot")
-            }
-            Outcome::PrefetchUnavailable { commit } => {
-                write!(
-                    f,
-                    "cache-warm closure for {commit} is unavailable; skipping until the cache catches up"
-                )
-            }
-            Outcome::CanaryStarted {
-                commit,
-                next_boot,
-                persist,
-                expires_at,
-            } => {
-                if *persist {
-                    write!(f, "trialling {commit}, staged for boot; ")?;
-                } else {
-                    write!(f, "trialling {commit}; boot floor {next_boot}; ")?;
-                }
-                match expires_at {
-                    Some(at) => write!(f, "expires {}", at.format("%Y-%m-%d %H:%MZ")),
-                    None => write!(f, "no timeout"),
-                }
-            }
-            Outcome::CanaryHeld { commit, next_boot } => {
-                write!(f, "holding canary {commit}; boot floor {next_boot}")
-            }
-        }
-    }
 }
 
 impl Outcome {
@@ -146,9 +104,10 @@ pub enum Trigger {
     },
 }
 
-/// Run one update cycle.
-pub fn run_once(config: &Config, trigger: Trigger) -> Result<Outcome> {
-    run(config, &RealSystem, Utc::now(), &read_boot_id()?, trigger)
+/// Run one update cycle, reporting its progress to `events`.
+pub fn run_once(config: &Config, trigger: Trigger, events: &Events) -> Result<Outcome> {
+    let system = RealSystem { events };
+    run(config, &system, Utc::now(), &read_boot_id()?, trigger)
 }
 
 fn run(
@@ -158,6 +117,7 @@ fn run(
     boot_id: &str,
     trigger: Trigger,
 ) -> Result<Outcome> {
+    system.step(Step::Fetch);
     let repo = Repo::open_or_clone(&config.repo_path(), &config.repo.url)?;
     repo.fetch()?;
     let main_tip = repo.tip(&config.repo.branch)?;
@@ -585,9 +545,15 @@ mod tests {
         /// tracked branch. Set to `Some(false)` to model a freshly-added
         /// host.
         attr_defined: Option<bool>,
+        /// Phases the engine announced, in order.
+        steps: RefCell<Vec<Step>>,
     }
 
     impl System for MockSystem {
+        fn step(&self, step: Step) {
+            self.steps.borrow_mut().push(step);
+        }
+
         fn prefetch(&self, flake_ref: &str) -> Result<()> {
             self.calls
                 .borrow_mut()
@@ -721,6 +687,18 @@ mod tests {
 
         assert_eq!(outcome, Outcome::UpToDate);
         assert!(system.calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn the_cycle_announces_fetching_first() {
+        let (fixture, _origin, initial) = Fixture::new();
+        fixture.set_current(initial);
+        fixture.set_next_boot(initial);
+
+        let system = MockSystem::default();
+        run(&fixture.config, &system, now(), BOOT, Trigger::Scheduled).unwrap();
+
+        assert_eq!(*system.steps.borrow(), vec![Step::Fetch]);
     }
 
     #[test]
