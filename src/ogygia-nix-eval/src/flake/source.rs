@@ -545,11 +545,11 @@ fn from_store(io: &Io, locked: &Attrs) -> Result<Option<Source>> {
 }
 
 /// The absolute path a `file:` URL with no host names, such as `/r` for
-/// `file:/r` or `file:///r?q`, decoded.
+/// `file:/r` or `file:///r?q#f`, decoded.
 fn file_url_path(url: &str) -> Option<PathBuf> {
     let rest = url.strip_prefix("file:")?;
     let path = rest.strip_prefix("//").unwrap_or(rest);
-    let path = path.split_once('?').map_or(path, |(p, _)| p);
+    let path = path.split(['?', '#']).next().unwrap_or(path);
     let path = crate::builtins::url::decode(path.as_bytes());
     path.starts_with(b"/")
         .then(|| PathBuf::from(OsStr::from_bytes(&path)))
