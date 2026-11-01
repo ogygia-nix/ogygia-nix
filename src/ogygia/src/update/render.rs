@@ -3,6 +3,12 @@
 //! The daemon sends data (see `ogygia_updated::control`); everything a
 //! person reads is made here.
 
+use std::io::IsTerminal;
+use std::io::Write;
+use std::process::Child;
+use std::process::Command;
+use std::process::Stdio;
+
 use chrono::DateTime;
 use chrono::Utc;
 use clap::ValueEnum;
@@ -20,6 +26,10 @@ use serde_json::Value;
 /// How to present the daemon's progress.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum Format {
+    /// nom if it is installed and stderr is a terminal, otherwise plain.
+    Auto,
+    /// Follow builds with nom (nix-output-monitor).
+    Nom,
     /// One line per phase and per build message.
     Plain,
     /// The daemon's frames, one JSON object per line on stdout.
@@ -30,13 +40,22 @@ pub enum Format {
 /// for the final result (or, with [`Format::Json`], for the frames).
 pub struct Renderer {
     format: Format,
+    /// The running nom, if any. Each nix invocation gets its own, started
+    /// by its first event and ended by the next step.
+    nom: Option<Child>,
     warned_unknown: bool,
 }
 
 impl Renderer {
     pub fn new(format: Format) -> Self {
+        let format = match format {
+            Format::Auto if std::io::stderr().is_terminal() && nom_installed() => Format::Nom,
+            Format::Auto => Format::Plain,
+            explicit => explicit,
+        };
         Renderer {
             format,
+            nom: None,
             warned_unknown: false,
         }
     }
@@ -50,14 +69,26 @@ impl Renderer {
         }
 
         match frame {
-            Frame::Step { step } => eprintln!("==> {}", step_label(step)),
+            Frame::Step { step } => {
+                self.end_nom();
+                eprintln!("==> {}", step_label(step));
+            }
             Frame::Nix { event } => {
+                if self.format == Format::Nom && self.send_to_nom(&format!("@nix {event}")) {
+                    return;
+                }
                 if let Some(text) = nix_event_text(event) {
                     eprintln!("{text}");
                 }
             }
-            Frame::Output { line, .. } => eprintln!("{line}"),
-            Frame::Finished { .. } => {}
+            Frame::Output { line, .. } => {
+                // nom passes lines that are not nix events through, which
+                // keeps them in order with the build display.
+                if !self.send_to_nom(line) {
+                    eprintln!("{line}");
+                }
+            }
+            Frame::Finished { .. } => self.end_nom(),
             Frame::Unknown => {
                 if !std::mem::replace(&mut self.warned_unknown, true) {
                     eprintln!("warning: ignoring a message from a newer ogygia-updated");
@@ -65,6 +96,62 @@ impl Renderer {
             }
         }
     }
+
+    /// Finish any running nom, so it has restored the terminal before
+    /// anything else is printed.
+    pub fn finish(&mut self) {
+        self.end_nom();
+    }
+
+    /// Write `line` to nom, starting it if this is the first line of a
+    /// nix invocation. Returns false if there is no nom to take it, in
+    /// which case nom is not used from then on.
+    fn send_to_nom(&mut self, line: &str) -> bool {
+        if self.format != Format::Nom {
+            return false;
+        }
+        if self.nom.is_none() {
+            match Command::new("nom")
+                .arg("--json")
+                .stdin(Stdio::piped())
+                .spawn()
+            {
+                Ok(child) => self.nom = Some(child),
+                Err(error) => {
+                    eprintln!("warning: could not run nom ({error}); showing plain output");
+                    self.format = Format::Plain;
+                    return false;
+                }
+            }
+        }
+        let stdin = self.nom.as_mut().and_then(|nom| nom.stdin.as_mut());
+        match stdin.map(|stdin| writeln!(stdin, "{line}")) {
+            Some(Ok(())) => true,
+            _ => {
+                // nom exited early, e.g. on ^C in a terminal.
+                self.end_nom();
+                self.format = Format::Plain;
+                false
+            }
+        }
+    }
+
+    fn end_nom(&mut self) {
+        if let Some(mut nom) = self.nom.take() {
+            drop(nom.stdin.take());
+            let _ = nom.wait();
+        }
+    }
+}
+
+fn nom_installed() -> bool {
+    Command::new("nom")
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
 }
 
 fn step_label(step: &Step) -> String {
@@ -87,7 +174,7 @@ fn step_label(step: &Step) -> String {
 
 /// The line, if any, a nix log event is worth in plain output: its
 /// messages, the start of each build and substitution, and build logs.
-/// Everything else is progress bookkeeping.
+/// Everything else is progress bookkeeping that only nom draws.
 fn nix_event_text(event: &Value) -> Option<String> {
     let text = match event["action"].as_str()? {
         // Up to "info"; anything chattier is debugging output.
@@ -302,7 +389,7 @@ mod tests {
             text(json!({"action": "msg", "level": 3, "msg": "copying path"})),
             Some("copying path".to_string())
         );
-        // Chatty debugging messages and bookkeeping are dropped.
+        // Chatty debugging messages and bookkeeping are left to nom.
         assert_eq!(
             text(json!({"action": "msg", "level": 4, "msg": "evaluating file"})),
             None

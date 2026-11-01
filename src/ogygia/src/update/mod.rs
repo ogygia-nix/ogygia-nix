@@ -35,9 +35,9 @@ pub struct UpdateArgs {
     #[arg(long, default_value = ogygia_updated::control::DEFAULT_SOCKET_PATH)]
     socket: PathBuf,
 
-    /// How to show progress: plain lines, or json to print the daemon's
-    /// frames
-    #[arg(long, value_enum, default_value = "plain", global = true)]
+    /// How to show progress: nom if it is installed and stderr is a
+    /// terminal, otherwise plain lines; json prints the daemon's frames
+    #[arg(long, value_enum, default_value = "auto", global = true)]
     format: Format,
 
     #[command(subcommand)]
@@ -124,12 +124,14 @@ impl UpdateArgs {
         };
 
         // Root is needed only to reach the socket. Nothing after this,
-        // from reading the daemon's frames onwards, keeps it.
+        // from reading the daemon's frames to running nom, keeps it.
         let connection = Connection::send(&self.socket, &request)?;
         privileges::drop_root()?;
 
         let mut renderer = Renderer::new(self.format);
-        let reply = connection.receive(|frame| renderer.frame(frame))?;
+        let reply = connection.receive(|frame| renderer.frame(frame));
+        renderer.finish();
+        let reply = reply?;
 
         // With --format json stdout carries only the frames, which already
         // include the reply.
