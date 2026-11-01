@@ -178,8 +178,9 @@ pub fn derivation_strict<'a>(ev: &Eval<'a>, attrs: Value<'a>) -> R<'a> {
             json.push(b':');
             super::json::write_json(ev, e.value, &mut json, &mut ctx)?;
             match key {
-                "builder" | "system" | "outputHash" | "outputHashAlgo" | "outputHashMode" => {
-                    ev.force_str(e.value)?.s.to_vec()
+                "builder" => ev.force_str(e.value)?.s.to_vec(),
+                "system" | "outputHash" | "outputHashAlgo" | "outputHashMode" => {
+                    ev.force_str_no_ctx(e.value)?.to_vec()
                 }
                 "outputs" => {
                     let list = ev
