@@ -1,0 +1,4 @@
+#~flake ?a=b#x
+#~tree root git
+#~file flake.nix
+{ outputs = _: { x = 3; }; }
