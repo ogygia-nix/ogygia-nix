@@ -88,7 +88,7 @@ pub(crate) fn url_ref(r: &[u8], flakes: bool) -> Result<Attrs, String> {
         });
     };
     let mut params = params(query)?;
-    if file_with_host(&uri) {
+    if uri.file_with_host() {
         return Err(not_absolute());
     }
 
@@ -209,14 +209,9 @@ pub(crate) fn url_ref(r: &[u8], flakes: bool) -> Result<Attrs, String> {
 pub(crate) fn is_path(r: &[u8]) -> bool {
     let base = split_once(r, b'?').map_or(r, |(b, _)| b);
     match url::parse(base) {
-        Ok(uri) => file_with_host(&uri),
+        Ok(uri) => uri.file_with_host(),
         Err(_) => !bare_id(r),
     }
-}
-
-fn file_with_host(uri: &url::Uri<'_>) -> bool {
-    let scheme = split_once(uri.scheme, b'+').map_or(uri.scheme, |(_, s)| s);
-    scheme == b"file" && uri.authority.as_ref().is_some_and(|a| !a.host.is_empty())
 }
 
 /// The parameters of the URL query `query`, decoded. The first of

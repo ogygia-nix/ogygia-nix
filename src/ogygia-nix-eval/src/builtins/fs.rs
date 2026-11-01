@@ -339,7 +339,8 @@ pub fn fetch_git<'a>(ev: &Eval<'a>, arg: Value<'a>) -> R<'a> {
 
 /// Rejects a `fetchGit` URL that is neither an absolute path, a valid
 /// URL, nor SCP-style `[user@]host:path` with a non-empty path, where a
-/// host in brackets must be an IPv6 address.
+/// host in brackets must be an IPv6 address, or that is a URL with a host
+/// whose scheme is `file`, perhaps after a `+`.
 fn check_git_url<'a>(url: &[u8]) -> R<'a, ()> {
     const SCHEMES: &[&[u8]] = &[b"file", b"git", b"ssh", b"http", b"https", b"ftp", b"ftps"];
     if url.first() == Some(&b'/') {
@@ -360,7 +361,16 @@ fn check_git_url<'a>(url: &[u8]) -> R<'a, ()> {
     if SCHEMES.contains(&scheme.strip_prefix(b"git+").unwrap_or(scheme))
         || url.windows(3).any(|w| w == b"://")
     {
-        return super::url::check(url).or_else(eval_err);
+        let uri = super::url::parse(url).or_else(eval_err)?;
+        if uri.file_with_host() {
+            let rest = &url[scheme.len() + 3..];
+            let end = rest.iter().position(|c| b"/?#".contains(c));
+            return eval_err(format!(
+                "file:// URL '{shown}' has unexpected authority '{}'",
+                String::from_utf8_lossy(&super::url::decode(&rest[..end.unwrap_or(rest.len())]))
+            ));
+        }
+        return Ok(());
     }
     // The first "@[", or else a leading '[', opens a bracket. When a ']'
     // closes it, the path starts after that ']', which must be followed by
