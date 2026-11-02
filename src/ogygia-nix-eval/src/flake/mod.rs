@@ -249,9 +249,37 @@ fn git_root(dir: &Path) -> Option<&Path> {
     dir.ancestors().find(|d| d.join(".git").exists())
 }
 
-/// The flake reference of an installable, made absolute against `cwd`.
-/// A path within a Git repository's working tree is a `git+file:` reference
-/// to the repository, and its query is that reference's.
+/// The directory of the flake that directory `dir` is part of: the nearest
+/// of it and its ancestors with a `flake.nix`, not looking above the root of
+/// a Git working tree.
+fn find_flake(dir: &Path) -> anyhow::Result<&Path> {
+    match std::fs::metadata(dir) {
+        Ok(m) if m.is_dir() => {}
+        Ok(_) => anyhow::bail!(
+            "path \"{}\" is not a flake (because it's not a directory)",
+            dir.display()
+        ),
+        Err(e) => anyhow::bail!("getting status of \"{}\": {e}", dir.display()),
+    }
+    for d in dir.ancestors() {
+        if d.join("flake.nix").symlink_metadata().is_ok() {
+            return Ok(d);
+        }
+        if d.join(".git").exists() {
+            anyhow::bail!(
+                "path \"{}\" is not part of a flake (neither it nor its parent directories contain a 'flake.nix' file)",
+                d.display()
+            );
+        }
+    }
+    anyhow::bail!("could not find a flake.nix file")
+}
+
+/// The flake reference of an installable, made absolute against `cwd`. A
+/// path refers to the flake it is part of, and its query is that
+/// reference's. Within a Git repository's working tree, that is a
+/// `git+file:` reference to the repository, whose `dir` is the flake's
+/// directory within it.
 fn installable_ref(flake: &str, cwd: &Path) -> anyhow::Result<Attrs> {
     if !crate::builtins::flake::is_path(flake.as_bytes()) {
         return flakeref::parse(flake, Some(cwd));
@@ -261,15 +289,21 @@ fn installable_ref(flake: &str, cwd: &Path) -> anyhow::Result<Attrs> {
         None => (flake, String::new()),
     };
     let attrs = flakeref::parse(base, Some(cwd))?;
-    let dir = PathBuf::from(flakeref::get_str(&attrs, "path").unwrap_or(""));
-    let Some(root) = git_root(&dir) else {
-        return flakeref::parse(flake, Some(cwd));
+    let path = PathBuf::from(flakeref::get_str(&attrs, "path").unwrap_or(""));
+    let dir = find_flake(&path)?;
+    let Some(root) = git_root(dir) else {
+        let mut attrs = flakeref::parse(flake, Some(cwd))?;
+        attrs.insert("path".to_owned(), Attr::Str(dir.display().to_string()));
+        return Ok(attrs);
     };
     let root_url = crate::builtins::url::encode(root.as_os_str().as_bytes(), b"/");
     let url = format!("git+file://{}{query}", String::from_utf8_lossy(&root_url));
     let mut attrs = flakeref::parse(&url, None)?;
     let sub = dir.strip_prefix(root).unwrap_or(Path::new(""));
     if !sub.as_os_str().is_empty() {
+        if attrs.contains_key("dir") {
+            anyhow::bail!("flake URL '{flake}' has an inconsistent 'dir' parameter");
+        }
         attrs.insert("dir".to_owned(), Attr::Str(sub.display().to_string()));
     }
     Ok(attrs)

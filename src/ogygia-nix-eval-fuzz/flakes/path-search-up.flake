@@ -1,0 +1,8 @@
+#~flake @dir(root)/a?dir=b#x
+#~tree root path
+#~file a/b/flake.nix
+{ outputs = _: { x = 1; }; }
+#~file b/flake.nix
+{ outputs = { self }: { x = { inherit (self) outPath; }; }; }
+#~file flake.nix
+{ outputs = _: { x = 3; }; }
