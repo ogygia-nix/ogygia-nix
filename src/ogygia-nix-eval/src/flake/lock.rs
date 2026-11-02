@@ -53,7 +53,7 @@ impl Lock {
     }
 
     /// The node with key `key`, and the key as the lock file holds it.
-    pub fn node(&self, key: &str) -> Result<(&str, &Node), Box<EvalError>> {
+    pub fn node(&self, key: &str) -> Result<(&str, &Node), Box<EvalError<'static>>> {
         match self.nodes.get_key_value(key) {
             Some((k, n)) => Ok((k, n)),
             None => eval_err(format!("lock file references missing node '{key}'")),
@@ -61,23 +61,27 @@ impl Lock {
     }
 
     /// The key of the node at `path` from the root, following `follows`.
-    pub fn resolve(&self, path: &[String]) -> Result<&str, Box<EvalError>> {
+    pub fn resolve(&self, path: &[String]) -> Result<&str, Box<EvalError<'static>>> {
         self.resolve_depth(path, 0)
     }
 
     /// The key of the node `edge` leads to, following `follows`.
-    pub fn target(&self, edge: &Edge) -> Result<&str, Box<EvalError>> {
+    pub fn target(&self, edge: &Edge) -> Result<&str, Box<EvalError<'static>>> {
         self.target_depth(edge, 0)
     }
 
-    fn target_depth(&self, edge: &Edge, depth: usize) -> Result<&str, Box<EvalError>> {
+    fn target_depth(&self, edge: &Edge, depth: usize) -> Result<&str, Box<EvalError<'static>>> {
         match edge {
             Edge::Node(k) => Ok(self.node(k)?.0),
             Edge::Follows(p) => self.resolve_depth(p, depth),
         }
     }
 
-    fn resolve_depth(&self, path: &[String], depth: usize) -> Result<&str, Box<EvalError>> {
+    fn resolve_depth(
+        &self,
+        path: &[String],
+        depth: usize,
+    ) -> Result<&str, Box<EvalError<'static>>> {
         if depth > self.nodes.len() {
             return eval_err(format!("input '{}' follows itself", path.join("/")));
         }

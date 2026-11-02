@@ -17,6 +17,7 @@ mod builtins;
 mod compile;
 mod context;
 mod derivation;
+mod diagnostic;
 mod eval;
 mod fetch;
 mod flake;
@@ -30,6 +31,7 @@ mod symbol;
 mod value;
 
 pub use context::Context;
+pub use diagnostic::Diagnostic;
 pub use eval::Eval;
 pub use eval::Feature;
 pub use eval::Settings;
@@ -77,9 +79,9 @@ pub fn run_with_stack<T: Send>(f: impl FnOnce() -> T + Send) -> T {
 /// Why [`eval_to_string`] failed.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    /// Evaluation failed; holds the message and trace.
+    /// Evaluation failed.
     #[error("{0}")]
-    Eval(String),
+    Eval(Box<Diagnostic>),
     /// The expression used a feature in [`Settings::disabled`].
     #[error("disabled feature: {0}")]
     Disabled(Feature),
@@ -109,13 +111,13 @@ pub fn eval_to_string(
     })
 }
 
-fn printed(result: Result<Vec<u8>, Box<EvalError>>) -> Result<String, Error> {
+fn printed(result: Result<Vec<u8>, Box<EvalError<'_>>>) -> Result<String, Error> {
     match result {
         Ok(bytes) => Ok(String::from_utf8_lossy(&bytes).into_owned()),
         Err(e) => Err(match e.kind {
             value::ErrorKind::Disabled(feature) => Error::Disabled(feature),
             value::ErrorKind::Unimplemented(feature) => Error::Unimplemented(feature),
-            _ => Error::Eval(e.to_string()),
+            _ => Error::Eval(Box::new(Diagnostic::new(&e))),
         }),
     }
 }
