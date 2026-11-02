@@ -4,12 +4,10 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use anyhow::Result;
 use bumpalo::Bump;
 
 use crate::builtins;
 use crate::compile;
-use crate::compile::CompileError;
 use crate::derivation::Derivation;
 use crate::io::Io;
 use crate::ir::ExprRef;
@@ -18,6 +16,8 @@ use crate::symbol;
 use crate::symbol::Interner;
 use crate::symbol::Sym;
 use crate::symbol::Syms;
+use crate::value::R;
+use crate::value::anyhow_err;
 
 /// Owns everything that outlives a single evaluation: compiled files are
 /// cached here so that later sessions reuse them, and all of it is freed when
@@ -115,19 +115,19 @@ impl Context {
 
     /// Compile an expression that did not come from a file. In pure evaluation
     /// it rejects what Nix rejects while parsing in that mode.
-    pub fn compile_str(&self, text: &str, base_dir: &str) -> Result<ExprRef<'_>, CompileError> {
+    pub fn compile_str(&self, text: &str, base_dir: &str) -> R<'_, ExprRef<'_>> {
         compile::compile(self, self.source(None, text), base_dir, self.io.pure, None)
     }
 
     /// Compile the file at the logical path `path`, which must be a file, not
     /// a directory, as [`compile_str`](Self::compile_str) does. Repeated calls
     /// return the same expression.
-    pub fn compile_file(&self, path: &str) -> Result<ExprRef<'_>> {
+    pub fn compile_file(&self, path: &str) -> R<'_, ExprRef<'_>> {
         self.cached(path, || self.compile_path(path, None))
     }
 
     /// Compile Nix source that ships with the evaluator, once per context.
-    pub fn compile_internal(&self, name: &str, text: &str) -> Result<ExprRef<'_>, CompileError> {
+    pub fn compile_internal(&self, name: &str, text: &str) -> R<'_, ExprRef<'_>> {
         let key = format!("<nix/{name}>");
         self.cached(&key, || {
             compile::compile(self, self.source(Some(&key), text), "/", true, None)
@@ -136,12 +136,12 @@ impl Context {
 
     /// Compile a file with extra names in scope (`scopedImport`). Not cached:
     /// the names differ per call.
-    pub fn compile_file_scoped(&self, path: &str, names: &[Sym]) -> Result<ExprRef<'_>> {
+    pub fn compile_file_scoped(&self, path: &str, names: &[Sym]) -> R<'_, ExprRef<'_>> {
         self.compile_path(path, Some(names))
     }
 
-    fn compile_path(&self, path: &str, extra_scope: Option<&[Sym]>) -> Result<ExprRef<'_>> {
-        let text = self.io.read_to_string(path)?;
+    fn compile_path(&self, path: &str, extra_scope: Option<&[Sym]>) -> R<'_, ExprRef<'_>> {
+        let text = self.io.read_to_string(path).map_err(anyhow_err)?;
         compile::compile(
             self,
             self.source(Some(path), &text),
@@ -149,7 +149,6 @@ impl Context {
             self.io.pure,
             extra_scope,
         )
-        .map_err(|e| anyhow::anyhow!("{}", e.msg))
     }
 
     /// Return the expression cached under `key`, running `compile` and

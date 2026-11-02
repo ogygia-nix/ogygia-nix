@@ -234,22 +234,21 @@ fn strip_list(s: &str, strip_elem: impl Fn(&str) -> Option<&str>) -> Option<&str
 }
 
 /// Whether the two disagree only as [`Skip::StoreRoot`] describes: Nix
-/// succeeded after adding a path to its store, and ogygia-nix-eval's last
+/// succeeded after adding a path to its store, and ogygia-nix-eval's
 /// error is that pure evaluation forbids `/` or `/nix/store`, or that it
 /// does not exist.
 fn hidden_root(theirs: &Run, store: Option<&Store>, ours: &Run) -> bool {
     let Err(err) = ours else { return false };
-    let Some(last) = err.lines().rfind(|l| !l.trim().is_empty()).map(|l| {
-        let l = l.trim();
-        l.strip_prefix("error: ").unwrap_or(l)
-    }) else {
+    let Some(message) = err.lines().next().and_then(|l| l.strip_prefix("error: ")) else {
         return false;
     };
     let hidden = |path| {
-        last == format!(
-            "access to absolute path '{path}' is forbidden in pure evaluation mode \
+        message
+            == format!(
+                "access to absolute path '{path}' is forbidden in pure evaluation mode \
              (use '--impure' to override)"
-        ) || last == format!("path '{path}' does not exist")
+            )
+            || message == format!("path '{path}' does not exist")
     };
     theirs.is_ok() && store.is_some_and(Store::stored) && (hidden("/") || hidden("/nix/store"))
 }
@@ -257,6 +256,8 @@ fn hidden_root(theirs: &Run, store: Option<&Store>, ours: &Run) -> bool {
 #[cfg(test)]
 mod tests {
     use ogygia_nix_eval::Error;
+    use ogygia_nix_eval::Settings;
+    use ogygia_nix_eval::eval_to_string;
     use ogygia_nix_eval::run_with_stack;
 
     use super::*;
@@ -524,9 +525,10 @@ mod tests {
             }
         };
         let diverges = |stored, err: &str| {
-            let err = format!("… while calling 'dc'\nerror: {err}\n");
+            let throw = format!("let dc = _: throw {err:?}; in dc 1");
+            let ours = |_: &str| eval_to_string(&throw, "/", true, Settings::default());
             matches!(
-                check_with(compile, |_| Err(Error::Eval(err.clone())), nix(stored), "1"),
+                check_with(compile, ours, nix(stored), "1"),
                 Outcome::Diverged(_)
             )
         };

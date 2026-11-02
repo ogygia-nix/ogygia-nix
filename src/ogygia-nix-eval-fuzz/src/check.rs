@@ -499,7 +499,7 @@ pub(crate) fn run_ours(
         Ok(Err(Error::Unimplemented(_))) => Err(Outcome::DeliberateDivergence(
             Skip::find(&Evidence::Unimplemented).expect("a skip matches unimplemented features"),
         )),
-        Ok(Err(Error::Eval(e))) => Ok(Err(e)),
+        Ok(Err(Error::Eval(e))) => Ok(Err(e.to_string())),
         Err(panic) => Err(panicked(src, expr, &panic)),
     }
 }

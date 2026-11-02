@@ -4,7 +4,6 @@
 //! small `Copy` handle and nothing is freed until the session ends.
 
 use std::cell::Cell;
-use std::fmt;
 
 use crate::builtins::Builtin;
 use crate::eval::Eval;
@@ -169,41 +168,77 @@ pub enum ErrorKind {
 }
 
 #[derive(Debug)]
-pub struct EvalError {
+pub struct EvalError<'a> {
     pub kind: ErrorKind,
     pub msg: String,
-    pub trace: Vec<String>,
+    /// Where the error happened, if known.
+    pub pos: Option<Pos<'a>>,
+    /// What is wrong at `pos`, in a few words.
+    pub label: Option<String>,
+    /// What evaluation was doing when it happened, innermost first.
+    pub trace: Vec<TraceFrame<'a>>,
 }
 
-impl fmt::Display for EvalError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // The outermost frames are rarely useful; keep the innermost.
-        for t in self.trace.iter().take(30).rev() {
-            writeln!(f, "… {t}")?;
+/// A step of evaluation an [`EvalError`] happened in.
+#[derive(Debug)]
+pub struct TraceFrame<'a> {
+    pub msg: String,
+    pub pos: Option<Pos<'a>>,
+}
+
+impl<'a> EvalError<'a> {
+    /// This error, at `pos` unless it already has a position or happened in
+    /// a step of evaluation inside the one at `pos`.
+    pub fn at(mut self: Box<Self>, pos: impl Into<Option<Pos<'a>>>) -> Box<Self> {
+        if self.pos.is_none() && self.trace.is_empty() {
+            self.pos = pos.into();
         }
-        write!(f, "error: {}", self.msg)
+        self
+    }
+
+    /// This error, at `pos` where `label` says what is wrong, unless it
+    /// already has a position or happened in a step of evaluation inside the
+    /// one at `pos`.
+    pub fn at_labelled(
+        mut self: Box<Self>,
+        pos: impl Into<Option<Pos<'a>>>,
+        label: impl Into<String>,
+    ) -> Box<Self> {
+        if self.pos.is_none() && self.trace.is_empty() {
+            self.pos = pos.into();
+            self.label = Some(label.into());
+        }
+        self
+    }
+
+    /// Record that the error happened while doing what `msg` says, at `pos`.
+    pub fn push_trace(&mut self, msg: impl Into<String>, pos: Option<Pos<'a>>) {
+        self.trace.push(TraceFrame {
+            msg: msg.into(),
+            pos,
+        });
     }
 }
 
-impl std::error::Error for EvalError {}
+pub type R<'a, T = Value<'a>> = Result<T, Box<EvalError<'a>>>;
 
-pub type R<'a, T = Value<'a>> = Result<T, Box<EvalError>>;
-
-pub fn error(kind: ErrorKind, msg: impl Into<String>) -> Box<EvalError> {
+pub fn error<'a>(kind: ErrorKind, msg: impl Into<String>) -> Box<EvalError<'a>> {
     Box::new(EvalError {
         kind,
         msg: msg.into(),
+        pos: None,
+        label: None,
         trace: Vec::new(),
     })
 }
 
-pub fn eval_err<T>(msg: impl Into<String>) -> Result<T, Box<EvalError>> {
+pub fn eval_err<'a, T>(msg: impl Into<String>) -> Result<T, Box<EvalError<'a>>> {
     Err(error(ErrorKind::Eval, msg))
 }
 
 /// An [`ErrorKind::Unimplemented`] error for `feature`, which
 /// `builtins.tryEval` does not catch.
-pub fn unimplemented<T>(feature: &'static str) -> Result<T, Box<EvalError>> {
+pub fn unimplemented<'a, T>(feature: &'static str) -> Result<T, Box<EvalError<'a>>> {
     Err(error(
         ErrorKind::Unimplemented(feature),
         format!("{feature} is not implemented by this evaluator"),
@@ -211,12 +246,12 @@ pub fn unimplemented<T>(feature: &'static str) -> Result<T, Box<EvalError>> {
 }
 
 /// An [`ErrorKind::Type`] error.
-pub fn type_err<T>(msg: impl Into<String>) -> Result<T, Box<EvalError>> {
+pub fn type_err<'a, T>(msg: impl Into<String>) -> Result<T, Box<EvalError<'a>>> {
     Err(error(ErrorKind::Type, msg))
 }
 
 /// An [`ErrorKind::Eval`] error whose message is `e` and its causes.
-pub fn anyhow_err(e: anyhow::Error) -> Box<EvalError> {
+pub fn anyhow_err<'a>(e: anyhow::Error) -> Box<EvalError<'a>> {
     error(ErrorKind::Eval, format!("{e:#}"))
 }
 

@@ -267,10 +267,10 @@ impl<'a> Eval<'a> {
                 if seen.insert(a as *const _ as *const ()) {
                     for e in a.entries {
                         self.deep_force_inner(e.value, seen).map_err(|mut err| {
-                            err.trace.push(format!(
-                                "while evaluating the attribute '{}'",
-                                self.name(e.name)
-                            ));
+                            err.push_trace(
+                                format!("while evaluating the attribute '{}'", self.name(e.name)),
+                                e.pos,
+                            );
                             err
                         })?;
                     }
@@ -524,7 +524,6 @@ impl<'a> Eval<'a> {
     /// `a op b` on numbers. `pos` is where the operator is written, if it is
     /// written anywhere.
     pub fn arith(&self, op: Arith, a: Value<'a>, b: Value<'a>, pos: Option<Pos<'a>>) -> R<'a> {
-        let at = pos.map(|p| format!(" at {p}")).unwrap_or_default();
         let a = self.force(a)?;
         let b = self.force(b)?;
         match (a, b) {
@@ -535,14 +534,19 @@ impl<'a> Eval<'a> {
                     Arith::Mul => (x.checked_mul(y), "multiplying", "*"),
                     Arith::Div => {
                         if y == 0 {
-                            return eval_err(format!("division by zero{at}"));
+                            return Err(error(ErrorKind::Eval, "division by zero")
+                                .at_labelled(pos, "the divisor is zero"));
                         }
                         (x.checked_div(y), "dividing", "/")
                     }
                 };
                 match r {
                     Some(r) => Ok(Value::Int(r)),
-                    None => eval_err(format!("integer overflow in {verb} {x} {sym} {y}{at}")),
+                    None => Err(error(
+                        ErrorKind::Eval,
+                        format!("integer overflow in {verb} {x} {sym} {y}"),
+                    )
+                    .at_labelled(pos, "overflows")),
                 }
             }
             (Value::Int(_) | Value::Float(_), Value::Int(_) | Value::Float(_)) => {
@@ -553,7 +557,8 @@ impl<'a> Eval<'a> {
                     Arith::Mul => x * y,
                     Arith::Div => {
                         if y == 0.0 {
-                            return eval_err(format!("division by zero{at}"));
+                            return Err(error(ErrorKind::Eval, "division by zero")
+                                .at_labelled(pos, "the divisor is zero"));
                         }
                         x / y
                     }
@@ -842,11 +847,11 @@ impl<'a> Eval<'a> {
         if let Some(v) = cached {
             return self.force(v);
         }
-        let expr = self.ctx.compile_file(&path).map_err(anyhow_err)?;
+        let expr = self.ctx.compile_file(&path)?;
         let v = self.thunk(ThunkState::Expr(expr, self.root_env()));
         self.import_cache.borrow_mut().insert(path.clone(), v);
         self.force(v).map_err(|mut e| {
-            e.trace.push(format!("while importing '{path}'"));
+            e.push_trace(format!("while importing '{path}'"), None);
             e
         })
     }
@@ -860,10 +865,7 @@ impl<'a> Eval<'a> {
 
     /// Parse and evaluate `text`, resolving relative paths against `base_dir`.
     pub fn eval_string(&self, text: &str, base_dir: &str) -> R<'a> {
-        let expr = self
-            .ctx
-            .compile_str(text, base_dir)
-            .map_err(|e| error(ErrorKind::Eval, e.msg))?;
+        let expr = self.ctx.compile_str(text, base_dir)?;
         self.eval(expr, self.root_env())
     }
 }

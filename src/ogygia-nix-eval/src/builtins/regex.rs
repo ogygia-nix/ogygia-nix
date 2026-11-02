@@ -431,7 +431,7 @@ fn translate_bracket(chars: &[char], mut i: usize, out: &mut String) -> Result<u
     Ok(i)
 }
 
-fn regex_error(re: &[u8], e: impl std::fmt::Display) -> Box<crate::value::EvalError> {
+fn regex_error(re: &[u8], e: impl std::fmt::Display) -> Box<crate::value::EvalError<'static>> {
     crate::value::error(
         crate::value::ErrorKind::Eval,
         format!(

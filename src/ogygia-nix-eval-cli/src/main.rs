@@ -1,6 +1,7 @@
 //! The `ogygia-nix-eval` command, which takes a subset of `nix`'s arguments
 //! and prints what `nix` would.
 
+use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -109,6 +110,10 @@ fn main() -> ExitCode {
             Ok(s) => {
                 println!("{s}");
                 ExitCode::SUCCESS
+            }
+            Err(ogygia_nix_eval::Error::Eval(d)) => {
+                eprintln!("{}", d.render(std::io::stderr().is_terminal()));
+                ExitCode::FAILURE
             }
             Err(e) => {
                 eprintln!("{e}");

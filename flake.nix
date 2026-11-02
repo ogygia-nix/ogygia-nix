@@ -425,6 +425,7 @@
               packages = with pkgs; [
                 etcd # for etcdctl
                 cargo-fuzz # for src/ogygia-nix-eval-fuzz
+                cargo-insta # for snapshot tests
                 jujutsu # jj, for the ogygia-updated change-id tests
                 nebula # nebula-cert, for the nebula round-trip test
                 rust-analyzer
