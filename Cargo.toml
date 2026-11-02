@@ -108,6 +108,7 @@ core-foundation-sys = "0.8"
 which = "8"
 
 # Nix evaluation
+ariadne = "0.6"
 bumpalo = "3"
 lasso = { version = "0.7", features = ["multi-threaded"] }
 md-5 = "0.10"
@@ -120,6 +121,9 @@ rowan = "0.16"
 
 # Custom test harnesses
 libtest-mimic = "0.8"
+
+# Snapshot testing
+insta = "1"
 
 # Fuzzing
 libc = "0.2"

@@ -113,7 +113,7 @@ pub fn add_error_context<'a>(ev: &Eval<'a>, context: Value<'a>, v: Value<'a>) ->
                 c.msg
             )
         });
-        e.trace.push(context);
+        e.push_trace(context, None);
         e
     })
 }

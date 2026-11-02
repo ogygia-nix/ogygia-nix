@@ -39,11 +39,13 @@ impl Source<'_> {
     }
 }
 
-/// A position in a source file.
+/// A span of a source file, from byte `offset` to byte `end`. Where a
+/// position is reported as a line and column, it is that of `offset`.
 #[derive(Clone, Copy)]
 pub struct Pos<'a> {
     pub source: &'a Source<'a>,
     pub offset: u32,
+    pub end: u32,
 }
 
 impl Pos<'_> {
@@ -78,6 +80,22 @@ pub enum BinOp {
     Add,
     Concat,
     Update,
+}
+
+impl BinOp {
+    /// The operator as written.
+    pub fn symbol(self) -> &'static str {
+        match self {
+            BinOp::Eq => "==",
+            BinOp::Neq => "!=",
+            BinOp::And => "&&",
+            BinOp::Or => "||",
+            BinOp::Impl => "->",
+            BinOp::Add => "+",
+            BinOp::Concat => "++",
+            BinOp::Update => "//",
+        }
+    }
 }
 
 pub enum AttrKey<'a> {
