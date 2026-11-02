@@ -1,0 +1,4 @@
+#~flake @dir(root)?dir=a#x
+#~tree root git
+#~file a/flake.nix
+{ outputs = _: { x = 1; }; }
