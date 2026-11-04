@@ -35,6 +35,13 @@ fn allocated(size: usize) {
     ALLOCATIONS.fetch_add(1, Relaxed);
 }
 
+fn count_new(p: *mut u8, size: usize) -> *mut u8 {
+    if !p.is_null() && *ENABLED {
+        allocated(size);
+    }
+    p
+}
+
 fn freed(size: usize) {
     LIVE.fetch_sub(size as u64, Relaxed);
 }
@@ -43,20 +50,12 @@ fn freed(size: usize) {
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         // SAFETY: the caller upholds `alloc`'s contract.
-        let p = unsafe { System.alloc(layout) };
-        if !p.is_null() && *ENABLED {
-            allocated(layout.size());
-        }
-        p
+        count_new(unsafe { System.alloc(layout) }, layout.size())
     }
 
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
         // SAFETY: the caller upholds `alloc_zeroed`'s contract.
-        let p = unsafe { System.alloc_zeroed(layout) };
-        if !p.is_null() && *ENABLED {
-            allocated(layout.size());
-        }
-        p
+        count_new(unsafe { System.alloc_zeroed(layout) }, layout.size())
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
@@ -81,7 +80,7 @@ unsafe impl GlobalAlloc for Counting {
 /// Counts the instructions this process and the threads it starts later
 /// retire in user mode.
 #[cfg(target_os = "linux")]
-pub struct Instructions(std::os::fd::OwnedFd);
+pub struct Instructions(std::fs::File);
 
 #[cfg(target_os = "linux")]
 impl Instructions {
@@ -138,9 +137,7 @@ impl Instructions {
             return None;
         }
         // SAFETY: the syscall returned a new file descriptor we own.
-        Some(Self(unsafe {
-            std::os::fd::OwnedFd::from_raw_fd(fd as i32)
-        }))
+        Some(Self(unsafe { std::fs::File::from_raw_fd(fd as i32) }))
     }
 
     /// The count so far, including threads that have exited.
@@ -148,9 +145,7 @@ impl Instructions {
         use std::io::Read;
 
         let mut buf = [0; 8];
-        std::fs::File::from(self.0.try_clone().ok()?)
-            .read_exact(&mut buf)
-            .ok()?;
+        (&self.0).read_exact(&mut buf).ok()?;
         Some(u64::from_ne_bytes(buf))
     }
 }
