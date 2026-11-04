@@ -10,9 +10,13 @@
     {
       "matchManagers": ["github-actions", "nix"],
       "automerge": true
+    },
+    {
+      "matchManagers": ["cargo"],
+      "rangeStrategy": "replace"
     }
   ],
-  "rebaseWhen": "behind-base-branch",
+  "rebaseWhen": "conflicted",
   "schedule": ["after 11pm on Monday"],
   "extends": [
     ":semanticCommits",
