@@ -92,10 +92,10 @@ fn type_with_refs(ty: &str, refs: &[&str], self_ref: bool) -> String {
     s
 }
 
-/// The path of a NAR-hashed (recursive SHA-256) source with no references,
-/// such as a flake input or a copied path.
-pub fn source_path(nar_sha256: &[u8], name: &str) -> String {
-    make_store_path("source", nar_sha256, name)
+/// The path of a NAR-hashed (recursive SHA-256) source that refers to the
+/// store paths `refs`, such as a flake input or a copied path.
+pub fn source_path(nar_sha256: &[u8], name: &str, refs: &[&str]) -> String {
+    make_store_path(&type_with_refs("source", refs, false), nar_sha256, name)
 }
 
 /// The path `builtins.toFile` writes `contents` to.
@@ -192,9 +192,15 @@ pub trait Store {
     /// their SHA-256 as a fixed-output path.
     fn add_flat(&self, name: &str, contents: &[u8]) -> Result<StorePath>;
 
-    /// Add the tree rooted at the empty path in `tree`, addressed by the hash
-    /// of its NAR serialisation, which is returned too.
-    fn add_source(&self, name: &str, tree: Rc<dyn Accessor>) -> Result<(StorePath, [u8; 32])>;
+    /// Add the tree rooted at the empty path in `tree`, referring to the
+    /// store paths `refs` and addressed by the hash of its NAR serialisation,
+    /// which is returned too.
+    fn add_source(
+        &self,
+        name: &str,
+        tree: Rc<dyn Accessor>,
+        refs: &[&str],
+    ) -> Result<(StorePath, [u8; 32])>;
 }
 
 /// A hash algorithm Nix supports.
@@ -388,7 +394,7 @@ mod tests {
         let (_, h) =
             parse_hash("sha256-62XMQD4WLdMAfdT0/8gJmPH2dKeTw908ryNloAplTr8=", None).unwrap();
         assert_eq!(
-            source_path(&h, "source"),
+            source_path(&h, "source", &[]),
             "/nix/store/0c7qm6wkgdg9dd3ws34vvg9xacdwa0dq-source"
         );
     }

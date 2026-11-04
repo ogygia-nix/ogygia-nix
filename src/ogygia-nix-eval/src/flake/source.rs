@@ -527,7 +527,7 @@ fn from_store(io: &Io, locked: &Attrs) -> Result<Option<Source>> {
         return Ok(None);
     };
     let (_, hash) = store::parse_hash(nar_hash, Some(HashAlgo::Sha256))?;
-    let path = store::source_path(&hash, "source");
+    let path = store::source_path(&hash, "source", &[]);
     let sp = StorePath::parse(&path).expect("a source path is a store path");
     if !io.read_stored(&sp) {
         return Ok(None);
