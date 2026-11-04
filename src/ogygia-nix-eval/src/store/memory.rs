@@ -75,15 +75,20 @@ impl Store for MemoryStore {
         }))
     }
 
-    fn add_source(&self, name: &str, tree: Rc<dyn Accessor>) -> Result<(StorePath, [u8; 32])> {
+    fn add_source(
+        &self,
+        name: &str,
+        tree: Rc<dyn Accessor>,
+        refs: &[&str],
+    ) -> Result<(StorePath, [u8; 32])> {
         super::check_name(name)?;
         let mut h = Sha256::new();
         nar::dump(&mut h, &*tree, "")?;
         let hash: [u8; 32] = h.finalize().into();
-        let path = StorePath(super::source_path(&hash, name));
+        let path = StorePath(super::source_path(&hash, name, refs));
         let path = self.insert(path, || Object {
             contents: tree,
-            refs: Vec::new(),
+            refs: refs.iter().map(|&r| r.to_owned()).collect(),
         });
         Ok((path, hash))
     }

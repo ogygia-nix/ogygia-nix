@@ -352,7 +352,7 @@ impl Io {
             return Ok(p.clone());
         }
         let name = crate::path::store_name(logical);
-        let sp = self.add_filtered_to_store(logical, &name, None)?;
+        let sp = self.add_filtered_to_store(logical, &name, None, &[])?;
         self.store_paths
             .borrow_mut()
             .insert(logical.to_owned(), sp.clone());
@@ -360,13 +360,14 @@ impl Io {
     }
 
     /// Copy `logical` to the store under `name`, keeping only entries
-    /// `keep(path, type)` accepts (`builtins.path`), and return its store
-    /// path.
+    /// `keep(path, type)` accepts (`builtins.path`) and referring to the store
+    /// paths `refs`, and return its store path.
     pub fn add_filtered_to_store(
         &self,
         logical: &str,
         name: &str,
         keep: Option<KeepFn<'_>>,
+        refs: &[&str],
     ) -> Result<String> {
         store::check_name(name)?;
         self.check_access(logical)?;
@@ -391,7 +392,7 @@ impl Io {
             }
         };
         let tree = Rc::new(Subtree { base, root, kept });
-        let (sp, _) = self.store.add_source(name, tree)?;
+        let (sp, _) = self.store.add_source(name, tree, refs)?;
         self.allow(sp)
     }
 
@@ -417,7 +418,7 @@ impl Io {
         name: &str,
         tree: Rc<dyn Accessor>,
     ) -> Result<(String, [u8; 32])> {
-        let (sp, hash) = self.store.add_source(name, tree)?;
+        let (sp, hash) = self.store.add_source(name, tree, &[])?;
         Ok((self.allow(sp)?, hash))
     }
 
@@ -465,6 +466,12 @@ impl Io {
         if !self.read_stored(path) {
             self.allowed.borrow_mut().insert(path.clone());
         }
+    }
+
+    /// The store paths `path` refers to, or none if the store does not have
+    /// it.
+    pub fn references(&self, path: &StorePath) -> Result<Vec<String>> {
+        self.store.references(path)
     }
 
     /// `path` and every store path it refers to, directly or indirectly.

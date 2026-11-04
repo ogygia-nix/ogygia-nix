@@ -212,7 +212,8 @@ pub fn store_path<'a>(ev: &Eval<'a>, path: Value<'a>) -> R<'a> {
 /// must be a regular file, copied unfiltered. With `sha256`, the hash the copy
 /// must have (of its NAR serialisation if `recursive`, else of its contents),
 /// a store path already valid for that hash is returned without reading
-/// `path`.
+/// `path`. The copy refers to the store paths `refs`, which a flat copy
+/// cannot.
 fn add_path<'a>(
     ev: &Eval<'a>,
     path: &str,
@@ -220,14 +221,26 @@ fn add_path<'a>(
     filter: Option<Value<'a>>,
     recursive: bool,
     sha256: Option<Vec<u8>>,
+    refs: &[&str],
 ) -> R<'a> {
     let name = match name {
         Some(n) if !n.is_empty() => n,
         _ => crate::path::store_name(path),
     };
+    if !recursive && !refs.is_empty() {
+        return eval_err(format!(
+            "fixed output derivation '{name}' is not allowed to refer to other store paths.\n\
+             You may need to use the 'unsafeDiscardReferences' derivation attribute, \
+             see the manual for more details."
+        ));
+    }
     let io = &ev.ctx.io;
     let expected = sha256.map(|h| {
-        crate::store::fixed_output_path(recursive, crate::store::HashAlgo::Sha256, &h, &name)
+        if recursive {
+            crate::store::source_path(&h, &name, refs)
+        } else {
+            crate::store::fixed_output_path(false, crate::store::HashAlgo::Sha256, &h, &name)
+        }
     });
     if let Some(sp) = expected.as_deref().and_then(crate::store::StorePath::parse)
         && io.is_valid(&sp).map_err(anyhow_err)?
@@ -249,7 +262,7 @@ fn add_path<'a>(
             }
         });
         let keep = keep.as_ref().map(|k| k as crate::io::KeepFn<'_>);
-        io.add_filtered_to_store(path, &name, keep)
+        io.add_filtered_to_store(path, &name, keep, refs)
             .map_err(|e| err.take().unwrap_or_else(|| anyhow_err(e)))?
     } else {
         io.add_flat_to_store(path, &name).map_err(anyhow_err)?
@@ -268,7 +281,7 @@ pub fn path<'a>(ev: &Eval<'a>, set: Value<'a>) -> R<'a> {
         (None, None, None, true, None);
     for e in set.entries {
         match ev.ctx.name(e.name) {
-            "path" => path = Some(ev.realise_path(e.value)?),
+            "path" => path = Some(source_arg(ev, e.value)?),
             "name" => {
                 name = Some(String::from_utf8_lossy(ev.force_str_no_ctx(e.value)?).into_owned());
             }
@@ -278,12 +291,27 @@ pub fn path<'a>(ev: &Eval<'a>, set: Value<'a>) -> R<'a> {
             n => return eval_err(format!("unsupported argument '{n}' to 'builtins.path'")),
         }
     }
-    let Some(path) = path else {
+    let Some((path, refs)) = path else {
         return eval_err(
             "missing required 'path' attribute in the first argument to builtins.path",
         );
     };
-    add_path(ev, &path, name, filter, recursive, sha256)
+    let refs: Vec<&str> = refs.iter().map(String::as_str).collect();
+    add_path(ev, &path, name, filter, recursive, sha256, &refs)
+}
+
+/// The path a `builtins.path` or `filterSource` source `v` names, and the
+/// store paths a copy of it refers to: those of the store object it is in
+/// if `v` is a string with context, else none.
+fn source_arg<'a>(ev: &Eval<'a>, v: Value<'a>) -> R<'a, (String, Vec<String>)> {
+    let path = ev.realise_path(v)?;
+    let refs = match (ev.force(v)?, crate::store::StorePath::split(&path)) {
+        (Value::Str(s), Some((sp, _))) if !s.ctx.is_empty() => {
+            ev.ctx.io.references(&sp).map_err(anyhow_err)?
+        }
+        _ => Vec::new(),
+    };
+    Ok((path, refs))
 }
 
 /// The hash a `sha256` argument gives, or `None` if it is empty.
@@ -299,9 +327,10 @@ fn sha256_arg<'a>(ev: &Eval<'a>, v: Value<'a>) -> R<'a, Option<Vec<u8>>> {
 }
 
 pub fn filter_source<'a>(ev: &Eval<'a>, filter: Value<'a>, path: Value<'a>) -> R<'a> {
-    let path = ev.realise_path(path)?;
+    let (path, refs) = source_arg(ev, path)?;
     let filter = ev.force_function(filter)?;
-    add_path(ev, &path, None, Some(filter), true, None)
+    let refs: Vec<&str> = refs.iter().map(String::as_str).collect();
+    add_path(ev, &path, None, Some(filter), true, None, &refs)
 }
 
 pub fn fetch_git<'a>(ev: &Eval<'a>, arg: Value<'a>) -> R<'a> {

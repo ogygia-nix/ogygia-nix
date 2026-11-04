@@ -761,6 +761,31 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn copying_a_store_path_with_context_keeps_its_references() {
+        let p = r#"let p = builtins.toFile "x" (builtins.toFile "x" "2");
+            q = builtins.toFile "q" "3";
+            d = builtins.unsafeDiscardStringContext;
+            in"#;
+        for expr in [
+            "builtins.path { path = p; }",
+            "builtins.path { path = p; name = \"y\"; }",
+            "builtins.path { path = builtins.substring 0 0 q + d p; }",
+            "builtins.path { path = d p; }",
+            "builtins.filterSource (p: t: true) p",
+            "builtins.path { path = p; sha256 = \"0gbnj8lbw8gy5c709zy5zqqzmg0gss0ixmwxhfxc5b26sm3w6g0g\"; }",
+            "builtins.path { path = d p; recursive = false; }",
+        ] {
+            assert_eq!(outcome(&format!("{p} {expr}")), "values", "{expr}");
+        }
+        assert_eq!(
+            outcome(&format!(
+                "{p} builtins.tryEval (builtins.path {{ path = p; recursive = false; }})"
+            )),
+            "uncaught"
+        );
+    }
+
+    #[test]
     fn ignores_the_store_root() {
         assert_eq!(outcome("/nix/store/."), "values");
         assert_eq!(
