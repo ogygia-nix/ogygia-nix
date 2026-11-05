@@ -3,8 +3,6 @@
 use std::io::Read;
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
-use std::os::unix::process::CommandExt;
-use std::os::unix::process::ExitStatusExt;
 use std::panic::AssertUnwindSafe;
 use std::path::Path;
 use std::path::PathBuf;
@@ -29,6 +27,7 @@ use strum::EnumIter;
 use strum::EnumString;
 use strum::IntoStaticStr;
 
+use crate::cgroup::Cgroup;
 use crate::skip;
 use crate::skip::Evidence;
 use crate::skip::Skip;
@@ -39,19 +38,38 @@ const DEEP_COPY: &str = "let dc = v: if builtins.isAttrs v then builtins.mapAttr
 /// How long Nix may spend on one expression of a new input.
 const NIX_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Address space Nix may use on a new input.
-const NIX_MEMORY: libc::rlim_t = 1 << 30;
+/// Memory Nix may use on a new input.
+const NIX_MEMORY: u64 = 1 << 30;
 
 /// What Nix may use on an input before [`check`] skips it.
 #[derive(Clone, Copy)]
 pub enum Budget {
-    /// 10 seconds per expression and 1 GiB of address space, for new inputs
-    /// while fuzzing.
+    /// 10 seconds per expression and 1 GiB of memory, for new inputs while
+    /// fuzzing. Nix runs in a cgroup of its own, which needs this process
+    /// [set up](crate::limit_nix_memory).
     Fuzzing,
     /// No limit, for findings: each already finished within
     /// [`Budget::Fuzzing`] once, so a limit would only make the result
     /// depend on how busy the machine is.
     Unlimited,
+}
+
+/// What one Nix process may use.
+struct Limit {
+    time: Duration,
+    memory: u64,
+}
+
+impl Budget {
+    fn limit(self) -> Option<Limit> {
+        match self {
+            Budget::Fuzzing => Some(Limit {
+                time: NIX_TIMEOUT,
+                memory: NIX_MEMORY,
+            }),
+            Budget::Unlimited => None,
+        }
+    }
 }
 
 const DEAD_PROXY: &str = "http://127.0.0.1:9";
@@ -101,7 +119,7 @@ pub unsafe fn block_network() {
 pub enum Outcome {
     /// Both sides reject it.
     ParseRejected,
-    /// Nix ran out of time, memory or stack, or was killed.
+    /// Nix ran out of time, memory or stack.
     Skipped,
     /// It meets a difference from Nix that ogygia-nix-eval keeps on purpose,
     /// as the [`Skip`] describes, so the two are not compared further.
@@ -285,30 +303,29 @@ pub(crate) struct Ran {
 /// `input` to its standard input. Fails with [`Outcome::Skipped`] or a
 /// deliberate divergence when what Nix did says nothing about equivalence.
 pub(crate) fn run_command(
-    mut cmd: Command,
+    cmd: Command,
     input: &[u8],
     store: &Store,
     budget: Budget,
 ) -> Result<Ran, Outcome> {
+    run_within(cmd, input, store, budget.limit())
+}
+
+/// [`run_command`] within `limit`, if any.
+fn run_within(
+    mut cmd: Command,
+    input: &[u8],
+    store: &Store,
+    limit: Option<Limit>,
+) -> Result<Ran, Outcome> {
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    if let Budget::Fuzzing = budget {
-        let limit = libc::rlimit {
-            rlim_cur: NIX_MEMORY,
-            rlim_max: NIX_MEMORY,
-        };
-        // SAFETY: setrlimit is async-signal-safe and touches no memory of ours.
-        unsafe {
-            cmd.pre_exec(move || {
-                if libc::setrlimit(libc::RLIMIT_AS, &limit) == 0 {
-                    Ok(())
-                } else {
-                    Err(std::io::Error::last_os_error())
-                }
-            });
-        }
-    }
+    let cgroup = limit.as_ref().map(|limit| {
+        let cgroup = Cgroup::new(limit.memory);
+        cgroup.place(&mut cmd);
+        cgroup
+    });
     let mut child = cmd.spawn().expect("running Nix");
     let stdout = read_all(child.stdout.take().unwrap());
     let stderr = read_all(child.stderr.take().unwrap());
@@ -322,10 +339,7 @@ pub(crate) fn run_command(
             panic!("writing Nix's input: {e}");
         }
     });
-    let deadline = match budget {
-        Budget::Fuzzing => Some(Instant::now() + NIX_TIMEOUT),
-        Budget::Unlimited => None,
-    };
+    let deadline = limit.map(|limit| Instant::now() + limit.time);
     let status = loop {
         if let Some(status) = child.try_wait().expect("waiting for Nix") {
             break Ok(status);
@@ -337,12 +351,14 @@ pub(crate) fn run_command(
         }
         std::thread::sleep(Duration::from_millis(5));
     };
+    let out_of_memory = cgroup.as_ref().is_some_and(Cgroup::exhausted);
+    // Killing whatever Nix left running closes its output.
+    drop(cgroup);
     stdin.join().unwrap();
     let stdout = store.unroot(&String::from_utf8_lossy(&stdout.join().unwrap()));
     let stderr = store.unroot(&String::from_utf8_lossy(&stderr.join().unwrap()));
     let status = status?;
-    // A SIGKILL not sent above is the kernel's OOM killer.
-    if exhausted(&stderr) || status.signal() == Some(libc::SIGKILL) {
+    if out_of_memory || exhausted(&stderr) {
         return Err(Outcome::Skipped);
     }
     if let Some(skip) = Skip::find(&Evidence::NixStderr(&stderr)) {
@@ -646,7 +662,7 @@ pub(crate) mod tests {
     use super::*;
 
     pub(crate) fn outcome(src: &str) -> String {
-        check(src, Budget::Fuzzing).to_string()
+        check(src, Budget::Unlimited).to_string()
     }
 
     #[test]
@@ -924,6 +940,35 @@ pub(crate) mod tests {
     }
 
     #[test]
+    #[ignore = "needs a cgroup of its own: run the test binary under \
+                `systemd-run --user --scope -p OOMPolicy=continue`"]
+    fn skips_what_nix_cannot_finish_within_its_limit() {
+        crate::limit_nix_memory().unwrap();
+        let nix = |expr: &str, time, memory| {
+            let store = Store::new();
+            let mut cmd = nix_command(&nix_instantiate(), &store);
+            cmd.args(["--eval", "--strict"]).args(NIX_ARGS).arg("-");
+            run_within(cmd, expr.as_bytes(), &store, Some(Limit { time, memory }))
+                .map(|ran| ran.stdout)
+        };
+        // Nix itself needs about 20 MiB.
+        let memory = 32 << 20;
+        assert_eq!(nix("1", NIX_TIMEOUT, memory).ok().as_deref(), Some("1\n"));
+        assert!(matches!(
+            nix(
+                "builtins.length (builtins.genList (i: \"\") 1000000)",
+                NIX_TIMEOUT,
+                memory
+            ),
+            Err(Outcome::Skipped)
+        ));
+        assert!(matches!(
+            nix("1", Duration::ZERO, memory),
+            Err(Outcome::Skipped)
+        ));
+    }
+
+    #[test]
     fn names_round_trip() {
         let mut outcomes = vec![
             Outcome::ParseRejected,
@@ -962,7 +1007,7 @@ pub(crate) mod tests {
         let report = report(check_with(
             compile,
             |_| Ok("2".to_owned()),
-            |mode, expr| run_nix(mode, expr, Budget::Fuzzing),
+            |mode, expr| run_nix(mode, expr, Budget::Unlimited),
             "1",
         ));
         assert!(report.starts_with("step: eval\n"), "{report}");

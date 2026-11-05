@@ -32,17 +32,17 @@ while parsing runs no Nix at all. A panic in the fuzzer itself still
 crashes it.
 
 Nix runs first at each step. On a new input it has 10 seconds and 1 GiB of
-address space; on a finding, which has already finished within those once,
-it has no limit, so the result does not depend on how busy the machine is.
-An input on which it runs out of time, memory or stack, or on which the
-kernel kills it, says nothing about
-equivalence, so it is skipped before ogygia-nix-eval sees it. So is one on
-which it hits a fixed limit of its implementation, such as the size of a
-compiled regular expression; `builtins.tryEval` cannot catch those errors,
-so no expression can depend on them. Both
-evaluators are pointed at a proxy that refuses connections, so fetches fail
-without touching the network. Inputs that are not UTF-8 are ignored, as
-ogygia-nix-eval only accepts text, and so are inputs containing a NUL byte:
+memory, in a cgroup of its own; on a finding, which has already finished
+within those once, it has no limit, so the result does not depend on how
+busy the machine is. An input on which it runs out of time, memory (as its
+cgroup records) or stack says nothing about equivalence, so it is
+skipped before ogygia-nix-eval sees it. So is one on which it hits a fixed
+limit of its implementation, such as the size of a compiled regular
+expression; `builtins.tryEval` cannot catch those errors, so no expression
+can depend on them. Both evaluators are pointed at a proxy that refuses
+connections, so fetches fail without touching the network. Inputs that are
+not UTF-8 are ignored, as ogygia-nix-eval only accepts text, and so are
+inputs containing a NUL byte:
 Nix stops reading at the first one outside a string, so it evaluates only
 a prefix of the input. Nor is an input compared once ogygia-nix-eval
 reaches a feature it deliberately leaves out, such as fetching, where it
@@ -120,6 +120,19 @@ the seeds:
 
 ```sh
 nix run .#ogygia-nix-eval-fuzz -- run DIR
+```
+
+Anything but `check` and `recheck` limits Nix with cgroup v2, so it must
+start as the only process in a cgroup delegated to it, with the memory
+controller available, and fails otherwise. It moves itself into a child
+cgroup `fuzzer`, which every process it starts inherits, and gives each
+Nix process a sibling of that. Under systemd that means `Delegate=yes`,
+and `OOMPolicy=continue` so that Nix running out of memory does not stop
+the unit; from a shell:
+
+```sh
+systemd-run --user --scope -p OOMPolicy=continue \
+  nix run .#ogygia-nix-eval-fuzz -- run DIR
 ```
 
 `run DIR` rechecks the findings in `DIR` and minimises its corpus (see
@@ -203,10 +216,13 @@ that libFuzzer does not first replay the whole corpus in one process.
 ### From the dev shell
 
 The binary also accepts libFuzzer's own arguments, which is how cargo-fuzz
-runs it:
+runs it. cargo-fuzz stays in the binary's cgroup, so build it with cargo-fuzz
+and run it on its own:
 
 ```sh
-cargo fuzz run --sanitizer none --fuzz-dir src/ogygia-nix-eval-fuzz ogygia-nix-eval-fuzz
+cargo fuzz build --sanitizer none --fuzz-dir src/ogygia-nix-eval-fuzz ogygia-nix-eval-fuzz
+systemd-run --user --scope -p OOMPolicy=continue \
+  target/x86_64-unknown-linux-gnu/release/ogygia-nix-eval-fuzz CORPUS
 ```
 
 There it stops at the first divergence and prints its report, unless

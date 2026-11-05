@@ -477,6 +477,15 @@ fn main() -> ExitCode {
         .map(|a| a.to_string_lossy().into_owned())
         .collect();
     let subcommand = args.get(1).map(String::as_str);
+    // Everything else may fuzz, or start processes that do.
+    if !matches!(
+        subcommand,
+        Some("recheck" | "check" | "help" | "-h" | "--help")
+    ) && let Err(e) = ogygia_nix_eval_fuzz::limit_nix_memory()
+    {
+        eprintln!("limiting Nix's memory: {e}");
+        return ExitCode::FAILURE;
+    }
     if !matches!(
         subcommand,
         Some("run" | "recheck" | "minimise" | "check" | "help" | "-h" | "--help")

@@ -456,7 +456,7 @@ mod tests {
 
     #[test]
     fn reports_divergences_beside_misread_platforms() {
-        let nix = |mode: &[&str], expr: &str| run_nix(mode, expr, Budget::Fuzzing);
+        let nix = |mode: &[&str], expr: &str| run_nix(mode, expr, Budget::Unlimited);
         let bad = r#"derivation { name = "d"; system = "\""; builder = "b"; }"#;
         // Never read back.
         let unread = report(check_with(
