@@ -1,6 +1,7 @@
 #![doc = include_str!("../README.md")]
 
 mod bundle;
+mod cgroup;
 mod check;
 mod findings;
 mod flake;
@@ -9,6 +10,7 @@ mod mutate;
 mod skip;
 mod stats;
 
+pub use cgroup::limit_nix_memory;
 pub use check::Budget;
 pub use check::Outcome;
 pub use check::block_network;

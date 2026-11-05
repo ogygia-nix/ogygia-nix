@@ -422,7 +422,7 @@ mod tests {
         for entry in std::fs::read_dir(&dir).expect("read flakes") {
             let path = entry.expect("read flakes").path();
             let src = std::fs::read_to_string(&path).expect("read bundle");
-            match check(&src, Budget::Fuzzing) {
+            match check(&src, Budget::Unlimited) {
                 Outcome::Diverged(report) => panic!("{}:\n{report}", path.display()),
                 Outcome::DeliberateDivergence(_) | Outcome::Skipped => {
                     panic!("{} is not compared", path.display())
