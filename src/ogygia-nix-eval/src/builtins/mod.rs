@@ -182,14 +182,15 @@ impl Builtin {
     }
 
     /// The builtin that `name` refers to in the global scope, if any.
-    pub fn in_scope(name: &str, pure: bool) -> Option<Builtin> {
+    pub fn in_scope(name: &str, pure: bool, flakes: bool) -> Option<Builtin> {
         let bare = name.strip_prefix("__");
         let b: Builtin = bare.unwrap_or(name).parse().ok()?;
-        (b.global() == bare.is_none() && !(pure && b.impure()) && !b.flakes()).then_some(b)
+        (b.global() == bare.is_none() && !(pure && b.impure()) && (flakes || !b.flakes()))
+            .then_some(b)
     }
 
-    /// Whether the `builtins` set has this builtin only with the `flakes`
-    /// experimental feature enabled, and the global scope never does.
+    /// Whether Nix has this builtin only with the `flakes` experimental
+    /// feature enabled.
     fn flakes(self) -> bool {
         matches!(self, Builtin::FetchTree)
     }
@@ -210,6 +211,7 @@ impl Builtin {
                 | FetchGit
                 | FetchMercurial
                 | FetchTarball
+                | FetchTree
                 | FromToml
                 | Import
                 | IsNull
