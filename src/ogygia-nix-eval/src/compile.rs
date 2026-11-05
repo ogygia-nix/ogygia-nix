@@ -728,7 +728,7 @@ impl<'a> Compiler<'a> {
         } else if name == s.null {
             return Ok(Expr::Null);
         }
-        if let Some(b) = Builtin::in_scope(self.name(name), self.pure) {
+        if let Some(b) = Builtin::in_scope(self.name(name), self.pure, self.ctx.flakes) {
             return Ok(Expr::Global(b));
         }
         if withs.is_empty() {
