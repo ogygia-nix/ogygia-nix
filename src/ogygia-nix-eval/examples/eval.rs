@@ -2,6 +2,8 @@
 //!
 //! Usage: `eval [-I prefix=path]... <expr>`
 
+use std::io::IsTerminal;
+
 use ogygia_nix_eval::Settings;
 
 fn main() {
@@ -21,6 +23,10 @@ fn main() {
     let cwd = std::env::current_dir().expect("current directory");
     match ogygia_nix_eval::eval_to_string(&expr, &cwd.to_string_lossy(), false, settings) {
         Ok(s) => println!("{s}"),
+        Err(ogygia_nix_eval::Error::Eval(d)) => {
+            eprintln!("{}", d.render(std::io::stderr().is_terminal()));
+            std::process::exit(1);
+        }
         Err(e) => {
             eprintln!("{e}");
             std::process::exit(1);

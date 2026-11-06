@@ -41,7 +41,6 @@ use crate::value::ThunkState;
 use crate::value::Value;
 use crate::value::error;
 use crate::value::eval_err;
-use crate::value::type_err;
 
 /// What the loop does next.
 pub(super) enum Step<'a> {
@@ -62,9 +61,9 @@ pub(super) enum Frame<'a> {
     /// stored in it; a failure restores the state.
     Thunk(&'a Thunk<'a>, ThunkState<'a>),
     /// A call, with the depth from before it, which is restored on leaving
-    /// it either way, and the lambda called once its body is evaluated,
-    /// which a failure is traced to.
-    Leave(usize, Option<&'a LambdaDef<'a>>),
+    /// it either way, the lambda called once its body is evaluated, which a
+    /// failure is traced to, and where the call is written, if anywhere.
+    Leave(usize, Option<&'a LambdaDef<'a>>, Option<Pos<'a>>),
     /// Apply the function to the remaining arguments of an application.
     Apply {
         args: &'a [ExprRef<'a>],
@@ -106,14 +105,15 @@ pub(super) enum Frame<'a> {
         first: Value<'a>,
         pos: Pos<'a>,
     },
-    /// The right operand of `&&`, `||` or `->`, which must be a Boolean.
-    Bool,
+    /// The right operand of `&&`, `||` or `->`, which must be a Boolean. Each
+    /// operator frame ends with where the operator is written.
+    Bool(BinOp, Pos<'a>),
     /// The left operand of `//`, with the right.
-    UpdateLeft(&'a Attrs<'a>),
+    UpdateLeft(&'a Attrs<'a>, Pos<'a>),
     /// The right operand of `+` after a path.
-    AddPath(&'a PathV<'a>),
+    AddPath(&'a PathV<'a>, Pos<'a>),
     /// The right operand of `+` after a left operand coerced to a string.
-    AddStr(Box<StrAcc<'a>>, Coerce),
+    AddStr(Box<StrAcc<'a>>, Coerce, Pos<'a>),
     /// A namespace of a `with` that a variable may come from.
     WithVar(WithVar<'a>, u32),
     /// A part of an interpolated string or path.
@@ -238,18 +238,21 @@ impl<'a> Eval<'a> {
     }
 
     /// Drop the frames of `stack` after `err`.
-    fn unwind(&self, stack: &mut Vec<Frame<'a>>, mut err: Box<EvalError>) -> Box<EvalError> {
+    fn unwind(
+        &self,
+        stack: &mut Vec<Frame<'a>>,
+        mut err: Box<EvalError<'a>>,
+    ) -> Box<EvalError<'a>> {
         while let Some(frame) = stack.pop() {
             match frame {
                 Frame::Thunk(t, state) => t.0.set(state),
-                Frame::Leave(depth, lambda) => {
+                Frame::Leave(depth, lambda, pos) => {
                     self.depth.set(depth);
                     if let Some(def) = lambda {
-                        err.trace.push(format!(
-                            "while calling '{}' defined at {}",
-                            self.lambda_name(def.name),
-                            def.pos
-                        ));
+                        err.push_trace(
+                            format!("while calling '{}'", self.lambda_name(def.name)),
+                            Some(pos.unwrap_or(def.pos)),
+                        );
                     }
                 }
                 _ => {}
@@ -278,7 +281,7 @@ impl<'a> Eval<'a> {
                 stack.push(Frame::Thunk(t, state));
                 // Like a primop, one call deeper.
                 let depth = self.enter()?;
-                stack.push(Frame::Leave(depth, None));
+                stack.push(Frame::Leave(depth, None, None));
                 return Ok(Step::Force(f(self)?));
             }
         };
@@ -414,7 +417,7 @@ impl<'a> Eval<'a> {
                 t.0.set(ThunkState::Done(v));
                 Ok(Step::Return(v))
             }
-            Frame::Leave(depth, _) => {
+            Frame::Leave(depth, ..) => {
                 self.depth.set(depth);
                 Ok(Step::Return(v))
             }
@@ -439,32 +442,42 @@ impl<'a> Eval<'a> {
             )),
             Frame::Assert { body, env, pos } => match self.force_bool(v)? {
                 true => Ok(Step::Eval(body, env)),
-                false => Err(error(
-                    ErrorKind::Assert,
-                    format!("assertion failed at {pos}"),
-                )),
+                false => Err(error(ErrorKind::Assert, "assertion failed")
+                    .at_labelled(pos, "the condition is false")),
             },
             Frame::Not => Ok(Step::Return(Value::Bool(!self.force_bool(v)?))),
-            Frame::Bool => Ok(Step::Return(Value::Bool(self.force_bool(v)?))),
+            Frame::Bool(op, pos) => {
+                let b = self.force_bool(v).map_err(|e| in_op(e, op, pos))?;
+                Ok(Step::Return(Value::Bool(b)))
+            }
             Frame::Operand1 {
                 op,
                 other,
                 env,
                 pos,
-            } => self.operand1(stack, op, v, other, env, pos),
-            Frame::Operand2 { op, first, pos } => self.operand2(op, first, v, pos),
-            Frame::UpdateLeft(right) => {
-                let left = self.force_attrs(v)?;
+            } => self
+                .operand1(stack, op, v, other, env, pos)
+                .map_err(|e| in_op(e, op, pos)),
+            Frame::Operand2 { op, first, pos } => self
+                .operand2(op, first, v, pos)
+                .map_err(|e| in_op(e, op, pos)),
+            Frame::UpdateLeft(right, pos) => {
+                let left = self
+                    .force_attrs(v)
+                    .map_err(|e| in_op(e, BinOp::Update, pos))?;
                 Ok(Step::Return(self.update(left, right)))
             }
-            Frame::AddPath(p) => {
+            Frame::AddPath(p, pos) => {
                 let mut buf = crate::path::abs(p.0).as_bytes().to_vec();
                 let mut ctx = Vec::new();
-                self.coerce_into(v, Coerce::PLAIN, &mut buf, &mut ctx)?;
+                self.coerce_into(v, Coerce::PLAIN, &mut buf, &mut ctx)
+                    .map_err(|e| in_op(e, BinOp::Add, pos))?;
                 self.appended_path(&buf, &ctx)
+                    .map_err(|e| in_op(e, BinOp::Add, pos))
             }
-            Frame::AddStr(mut acc, how) => {
-                self.coerce_into(v, how, &mut acc.buf, &mut acc.ctx)?;
+            Frame::AddStr(mut acc, how, pos) => {
+                self.coerce_into(v, how, &mut acc.buf, &mut acc.ctx)
+                    .map_err(|e| in_op(e, BinOp::Add, pos))?;
                 Ok(Step::Return(self.str_with_ctx(&acc.buf, acc.ctx)))
             }
             Frame::WithVar(w, i) => self.with_var(stack, w, i as usize, Some(v)),
@@ -498,11 +511,11 @@ impl<'a> Eval<'a> {
                 if !matches!(v, Value::Null) {
                     let name = self.attr_name(v)?;
                     if d.entries.iter().any(|e| e.name == name) {
-                        return eval_err(format!(
-                            "dynamic attribute '{}' already defined at {}",
-                            self.name(name),
-                            attr.pos
-                        ));
+                        return Err(error(
+                            ErrorKind::Eval,
+                            format!("dynamic attribute '{}' already defined", self.name(name)),
+                        )
+                        .at_labelled(attr.pos, "already defined"));
                     }
                     d.entries.push(Entry {
                         name,
@@ -543,32 +556,46 @@ impl<'a> Eval<'a> {
         pos: Option<Pos<'a>>,
     ) -> R<'a, Step<'a>> {
         let depth = self.enter()?;
-        stack.push(Frame::Leave(depth, None));
+        stack.push(Frame::Leave(depth, None, pos));
         match f {
             Value::Lambda(c) => self.enter_lambda(stack, c, arg),
-            Value::PrimOp(op) => self.call_primop(op, &[], arg),
-            Value::PrimOpApp(app) => self.call_primop(app.op, app.args, arg),
+            Value::PrimOp(op) => self.call_primop(op, &[], arg, pos),
+            Value::PrimOpApp(app) => self.call_primop(app.op, app.args, arg, pos),
             _ if let Some(functor) = self.functor(f) => {
                 stack.push(Frame::Call { arg, pos });
                 Ok(Step::Call(functor, f, None))
             }
-            other => type_err(format!(
-                "attempt to call something which is not a function but {}{}",
-                self.describe(other),
-                pos.map(|p| format!(" at {p}")).unwrap_or_default()
-            )),
+            other => {
+                let e = error(
+                    ErrorKind::Type,
+                    format!(
+                        "attempt to call something which is not a function but {}",
+                        self.describe(other)
+                    ),
+                );
+                Err(e.at_labelled(pos, "not a function"))
+            }
         }
     }
 
-    /// Apply `op`, already given `prev`, to one more argument.
-    fn call_primop(&self, op: Builtin, prev: &[Value<'a>], arg: Value<'a>) -> R<'a, Step<'a>> {
+    /// Apply `op`, already given `prev`, to one more argument, in a call
+    /// written at `pos` if anywhere. A failure that happened nowhere else is
+    /// put there.
+    fn call_primop(
+        &self,
+        op: Builtin,
+        prev: &[Value<'a>],
+        arg: Value<'a>,
+        pos: Option<Pos<'a>>,
+    ) -> R<'a, Step<'a>> {
+        let locate = |e: Box<EvalError<'a>>| e.at(pos);
         let Kind::PrimOp(f) = op.kind() else {
             unreachable!("only a primop is applied")
         };
         let r = match (f, prev) {
-            (PrimOpFn::F1(f), []) => f(self, arg)?,
-            (PrimOpFn::F2(f), [a]) => f(self, *a, arg)?,
-            (PrimOpFn::F3(f), [a, b]) => f(self, *a, *b, arg)?,
+            (PrimOpFn::F1(f), []) => f(self, arg).map_err(locate)?,
+            (PrimOpFn::F2(f), [a]) => f(self, *a, arg).map_err(locate)?,
+            (PrimOpFn::F3(f), [a, b]) => f(self, *a, *b, arg).map_err(locate)?,
             _ => {
                 let args = self
                     .bump
@@ -623,11 +650,14 @@ impl<'a> Eval<'a> {
         let attrs = match set {
             Value::Attrs(a) => a,
             other => {
-                return type_err(format!(
-                    "expected a set but found {} while evaluating the value passed for the lambda argument at {}",
-                    self.describe(other),
-                    def.pos
-                ));
+                return Err(error(
+                    ErrorKind::Type,
+                    format!(
+                        "expected a set but found {} while evaluating the value passed for the lambda argument",
+                        self.describe(other)
+                    ),
+                )
+                .at_labelled(def.pos, "this function expects a set"));
             }
         };
         let env = self.alloc_env(c.def.nslots(), c.env);
@@ -641,12 +671,15 @@ impl<'a> Eval<'a> {
                 None => match formal.default {
                     Some(d) => slot.set(self.lazy_slot(d, env)),
                     None => {
-                        return type_err(format!(
-                            "function '{}' called without required argument '{}' at {}",
-                            self.lambda_name(def.name),
-                            self.name(formal.name),
-                            def.pos
-                        ));
+                        return Err(error(
+                            ErrorKind::Type,
+                            format!(
+                                "function '{}' called without required argument '{}'",
+                                self.lambda_name(def.name),
+                                self.name(formal.name)
+                            ),
+                        )
+                        .at_labelled(def.pos, format!("requires '{}'", self.name(formal.name))));
                     }
                 },
             }
@@ -657,12 +690,15 @@ impl<'a> Eval<'a> {
                 .into_iter()
                 .find(|e| !formals.iter().any(|f| f.name == e.name));
             if let Some(bad) = bad {
-                return type_err(format!(
-                    "function '{}' called with unexpected argument '{}' at {}",
-                    self.lambda_name(def.name),
-                    self.name(bad.name),
-                    def.pos
-                ));
+                return Err(error(
+                    ErrorKind::Type,
+                    format!(
+                        "function '{}' called with unexpected argument '{}'",
+                        self.lambda_name(def.name),
+                        self.name(bad.name)
+                    ),
+                )
+                .at_labelled(def.pos, format!("does not take '{}'", self.name(bad.name))));
             }
         }
         if at.is_some() {
@@ -678,7 +714,7 @@ impl<'a> Eval<'a> {
         env: &'a Env<'a>,
     ) -> R<'a, Step<'a>> {
         // The call's frame is on top again once the argument is bound.
-        let Some(Frame::Leave(_, lambda)) = stack.last_mut() else {
+        let Some(Frame::Leave(_, lambda, _)) = stack.last_mut() else {
             unreachable!("a lambda body is evaluated in its call")
         };
         *lambda = Some(def);
@@ -701,7 +737,7 @@ impl<'a> Eval<'a> {
             (BinOp::And, Value::Bool(false)) => return Ok(Step::Return(Value::Bool(false))),
             (BinOp::Or, Value::Bool(true)) => return Ok(Step::Return(Value::Bool(true))),
             (BinOp::Impl, Value::Bool(false)) => return Ok(Step::Return(Value::Bool(true))),
-            (BinOp::And | BinOp::Or | BinOp::Impl, Value::Bool(_)) => Frame::Bool,
+            (BinOp::And | BinOp::Or | BinOp::Impl, Value::Bool(_)) => Frame::Bool(op, pos),
             (BinOp::And | BinOp::Or | BinOp::Impl, other) => {
                 return self.type_error("a Boolean", other);
             }
@@ -709,8 +745,8 @@ impl<'a> Eval<'a> {
             | (BinOp::Add, Value::Int(_) | Value::Float(_)) => {
                 Frame::Operand2 { op, first: a, pos }
             }
-            (BinOp::Update, _) => Frame::UpdateLeft(self.force_attrs(a)?),
-            (BinOp::Add, Value::Path(p)) => Frame::AddPath(p),
+            (BinOp::Update, _) => Frame::UpdateLeft(self.force_attrs(a)?, pos),
+            (BinOp::Add, Value::Path(p)) => Frame::AddPath(p, pos),
             // Only a string on the left copies paths to the store; a set
             // that coerces to a string concatenates without copying.
             (BinOp::Add, _) => {
@@ -720,7 +756,7 @@ impl<'a> Eval<'a> {
                 };
                 let mut acc = Box::<StrAcc>::default();
                 self.coerce_into(a, how, &mut acc.buf, &mut acc.ctx)?;
-                Frame::AddStr(acc, how)
+                Frame::AddStr(acc, how, pos)
             }
         };
         stack.push(frame);
@@ -787,11 +823,11 @@ impl<'a> Eval<'a> {
             }
             i += 1;
         }
-        eval_err(format!(
-            "undefined variable '{}' at {}",
-            self.name(w.name),
-            w.pos
-        ))
+        Err(error(
+            ErrorKind::Eval,
+            format!("undefined variable '{}'", self.name(w.name)),
+        )
+        .at_labelled(w.pos, "not defined"))
     }
 
     /// Select the path of `sel` from the attribute at `i` on, out of `v`,
@@ -837,17 +873,20 @@ impl<'a> Eval<'a> {
                         return Ok(Step::Eval(d, sel.env));
                     }
                     return match set {
-                        Value::Attrs(_) => eval_err(format!(
-                            "attribute '{}' missing at {}",
-                            self.name(name),
-                            sel.pos
-                        )),
-                        other => type_err(format!(
-                            "expected a set but found {} while selecting attribute '{}' at {}",
-                            self.describe(other),
-                            self.name(name),
-                            sel.pos
-                        )),
+                        Value::Attrs(_) => Err(error(
+                            ErrorKind::Eval,
+                            format!("attribute '{}' missing", self.name(name)),
+                        )
+                        .at_labelled(sel.pos, "no such attribute")),
+                        other => Err(error(
+                            ErrorKind::Type,
+                            format!(
+                                "expected a set but found {} while selecting attribute '{}'",
+                                self.describe(other),
+                                self.name(name)
+                            ),
+                        )
+                        .at_labelled(sel.pos, format!("selected from {}", other.show_type()))),
                     };
                 }
             }
@@ -982,6 +1021,12 @@ impl<'a> Eval<'a> {
             self.path_val(&canon_path(&String::from_utf8_lossy(buf))),
         ))
     }
+}
+
+/// `e`, at the operator `op` written at `pos` unless it is somewhere more
+/// precise.
+fn in_op<'a>(e: Box<EvalError<'a>>, op: BinOp, pos: Pos<'a>) -> Box<EvalError<'a>> {
+    e.at_labelled(pos, format!("in this '{}'", op.symbol()))
 }
 
 #[cfg(test)]

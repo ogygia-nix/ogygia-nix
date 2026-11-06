@@ -4,6 +4,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 
 use num_bigint::BigUint;
+use rnix::TextRange;
 use rnix::ast;
 use rnix::ast::AstToken;
 use rnix::ast::HasEntry;
@@ -28,19 +29,44 @@ use crate::ir::Source;
 use crate::ir::StaticAttr;
 use crate::path::canon_path;
 use crate::symbol::Sym;
+use crate::value::ErrorKind;
 use crate::value::NixStr;
 use crate::value::PathV;
+use crate::value::R;
+use crate::value::error;
 
-/// A parse or scoping error.
-#[derive(Debug)]
-pub struct CompileError {
-    pub msg: String,
+/// A parse or scoping error, at the source offsets `span` if it has one,
+/// where `label` says what is wrong.
+struct CompileError {
+    msg: String,
+    span: Option<(u32, u32)>,
+    label: Option<String>,
 }
 
 type CResult<T> = Result<T, CompileError>;
 
 fn err<T>(msg: impl Into<String>) -> CResult<T> {
-    Err(CompileError { msg: msg.into() })
+    Err(CompileError {
+        msg: msg.into(),
+        span: None,
+        label: None,
+    })
+}
+
+fn err_at<T>(pos: Pos<'_>, msg: impl Into<String>) -> CResult<T> {
+    Err(CompileError {
+        msg: msg.into(),
+        span: Some((pos.offset, pos.end)),
+        label: None,
+    })
+}
+
+fn err_labelled<T>(pos: Pos<'_>, msg: impl Into<String>, label: &str) -> CResult<T> {
+    Err(CompileError {
+        msg: msg.into(),
+        span: Some((pos.offset, pos.end)),
+        label: Some(label.to_owned()),
+    })
 }
 
 enum Scope {
@@ -68,20 +94,36 @@ pub fn compile<'a>(
     base_dir: &str,
     pure: bool,
     extra_scope: Option<&[Sym]>,
+) -> R<'a, ExprRef<'a>> {
+    compile_inner(ctx, source, base_dir, pure, extra_scope).map_err(|e| {
+        let mut err = error(ErrorKind::Eval, e.msg);
+        err.pos = e.span.map(|(offset, end)| Pos {
+            source,
+            offset,
+            end,
+        });
+        err.label = e.label;
+        err
+    })
+}
+
+fn compile_inner<'a>(
+    ctx: &'a Context,
+    source: &'a Source<'a>,
+    base_dir: &str,
+    pure: bool,
+    extra_scope: Option<&[Sym]>,
 ) -> CResult<ExprRef<'a>> {
     let text = end_comments_at_cr(source.text);
     let (text, inserted) = match_nix_tokens(&text);
     let (text, inserted) = parenthesise_legacy_lets(text, inserted);
     let (text, inserted) = parenthesise_inverts(text, inserted);
-    let pos = |offset: rnix::TextSize| Pos {
-        source,
-        offset: source_offset(&inserted, u32::from(offset)),
-    };
+    let pos = |range: TextRange| span(source, &inserted, range);
     if let Some(at) = invalid_whitespace(&text) {
-        return err(format!(
-            "syntax error: unexpected invalid token at {}",
-            pos(at.into())
-        ));
+        return err_at(
+            pos(TextRange::empty(at.into())),
+            "syntax error: unexpected invalid token",
+        );
     }
     let parse = rnix::Root::parse(&text);
     if let Some(e) = parse.errors().first() {
@@ -90,13 +132,10 @@ pub fn compile<'a>(
             | rnix::ParseError::UnexpectedExtra(r)
             | rnix::ParseError::UnexpectedWanted(_, r, _)
             | rnix::ParseError::UnexpectedDoubleBind(r)
-            | rnix::ParseError::DuplicatedArgs(r, _) => Some(*r),
-            _ => None,
+            | rnix::ParseError::DuplicatedArgs(r, _) => *r,
+            _ => TextRange::empty(parse.syntax().text_range().end()),
         };
-        let at = range
-            .map(|r| format!(" at {}", pos(r.start())))
-            .unwrap_or_default();
-        return err(format!("syntax error: {e}{at}"));
+        return err_at(pos(range), format!("syntax error: {e}"));
     }
     // rnix closes a parenthesised expression with whatever token follows
     // it, without reporting an error when that is not `)`.
@@ -107,11 +146,10 @@ pub fn compile<'a>(
         .filter_map(|n| n.last_token())
         .find(|t| t.kind() != rnix::SyntaxKind::TOKEN_R_PAREN)
     {
-        return err(format!(
-            "syntax error: unexpected {}, expecting ')' at {}",
-            t.text(),
-            pos(t.text_range().start())
-        ));
+        return err_at(
+            pos(t.text_range()),
+            format!("syntax error: unexpected {}, expecting ')'", t.text()),
+        );
     }
     // rnix parses expressions in `${ ... }` in an attribute name until `}`,
     // without reporting an error when there is more than one.
@@ -122,10 +160,10 @@ pub fn compile<'a>(
         .find_map(|n| n.children().nth(1))
     {
         let t = n.first_token().map(|t| t.to_string()).unwrap_or_default();
-        return err(format!(
-            "syntax error: unexpected {t}, expecting '}}' at {}",
-            pos(n.text_range().start())
-        ));
+        return err_at(
+            pos(n.text_range()),
+            format!("syntax error: unexpected {t}, expecting '}}'"),
+        );
     }
     // rnix parses a function wherever it parses an operand, but Nix only
     // allows one unparenthesised outside operators, lists and selects.
@@ -143,17 +181,17 @@ pub fn compile<'a>(
                 )
             })
     }) {
-        return err(format!(
-            "syntax error: unexpected function at {}",
-            pos(n.text_range().start())
-        ));
+        return err_at(pos(n.text_range()), "syntax error: unexpected function");
     }
     if let Some(at) = parse
         .syntax()
         .descendants()
         .find_map(|n| interpolation_after_path_trivia(&n))
     {
-        return err(format!("syntax error: unexpected '${{' at {}", pos(at)));
+        return err_at(
+            pos(TextRange::at(at, 2.into())),
+            "syntax error: unexpected '${'",
+        );
     }
     if let Some(at) = parse
         .syntax()
@@ -161,10 +199,10 @@ pub fn compile<'a>(
         .filter_map(ast::Path::cast)
         .find_map(|p| path_segments_before_interpolation(&p))
     {
-        return err(format!(
-            "syntax error: unexpected string, expecting '${{' at {}",
-            pos(at)
-        ));
+        return err_at(
+            pos(TextRange::empty(at)),
+            "syntax error: unexpected string, expecting '${'",
+        );
     }
     intern_names(ctx, &parse.syntax());
     let root = parse.tree();
@@ -653,8 +691,8 @@ fn source_offset(inserted: &[u32], offset: u32) -> u32 {
 /// attribute paths merged.
 #[derive(Default)]
 struct PreSet {
-    statics: Vec<(Sym, u32, PreAttr)>,
-    dynamics: Vec<(ast::Expr, u32, PreAttr)>,
+    statics: Vec<(Sym, TextRange, PreAttr)>,
+    dynamics: Vec<(ast::Expr, TextRange, PreAttr)>,
     /// `inherit (from) names;` sources.
     froms: Vec<ast::Expr>,
 }
@@ -664,9 +702,9 @@ enum PreAttr {
     /// A set merged from several definitions, and whether it is `rec`.
     Nested(PreSet, bool),
     /// `inherit name;`, resolved in the enclosing scope.
-    Inherit(Sym, u32),
+    Inherit(Sym, TextRange),
     /// `inherit (froms[i]) name;`
-    InheritFrom(usize, Sym, u32),
+    InheritFrom(usize, Sym, TextRange),
 }
 
 enum AttrName {
@@ -674,20 +712,23 @@ enum AttrName {
     Dynamic(ast::Expr),
 }
 
-fn offset(node: &impl AstNode<Language = rnix::NixLanguage>) -> u32 {
-    u32::from(node.syntax().text_range().start())
+/// The span of `source` that `range`, in the text [`match_nix_tokens`]
+/// returned with `inserted`, covers.
+fn span<'a>(source: &'a Source<'a>, inserted: &[u32], range: TextRange) -> Pos<'a> {
+    Pos {
+        source,
+        offset: source_offset(inserted, u32::from(range.start())),
+        end: source_offset(inserted, u32::from(range.end())),
+    }
 }
 
 impl<'a> Compiler<'a> {
-    fn at(&self, offset: u32) -> Pos<'a> {
-        Pos {
-            source: self.source,
-            offset: source_offset(&self.inserted, offset),
-        }
+    fn at(&self, range: TextRange) -> Pos<'a> {
+        span(self.source, &self.inserted, range)
     }
 
     fn pos(&self, node: &impl AstNode<Language = rnix::NixLanguage>) -> Pos<'a> {
-        self.at(offset(node))
+        self.at(node.syntax().text_range())
     }
 
     fn leak(&self, e: Expr<'a>) -> ExprRef<'a> {
@@ -732,7 +773,11 @@ impl<'a> Compiler<'a> {
             return Ok(Expr::Global(b));
         }
         if withs.is_empty() {
-            return err(format!("undefined variable '{}' at {pos}", self.name(name)));
+            return err_labelled(
+                pos,
+                format!("undefined variable '{}'", self.name(name)),
+                "not defined",
+            );
         }
         Ok(Expr::WithVar {
             name,
@@ -759,18 +804,18 @@ impl<'a> Compiler<'a> {
         Ok(match e {
             ast::Expr::Paren(p) => return self.expr_inner(&child(p.expr())?),
             ast::Expr::Root(r) => return self.expr_inner(&child(r.expr())?),
-            ast::Expr::Error(_) => return err(format!("syntax error at {pos}")),
+            ast::Expr::Error(_) => return err_at(pos, "syntax error"),
             ast::Expr::Literal(l) => match l.kind() {
                 ast::LiteralKind::Integer(i) => match i.value() {
                     Ok(v) => Expr::Int(v),
                     Err(_) => {
-                        return err(format!("invalid integer '{}' at {pos}", i.syntax().text()));
+                        return err_at(pos, format!("invalid integer '{}'", i.syntax().text()));
                     }
                 },
                 ast::LiteralKind::Float(f) => match parse_float(f.syntax().text()) {
                     Some(v) => Expr::Float(v),
                     None => {
-                        return err(format!("invalid float '{}' at {pos}", f.syntax().text()));
+                        return err_at(pos, format!("invalid float '{}'", f.syntax().text()));
                     }
                 },
                 ast::LiteralKind::Uri(u) => Expr::Str(self.lit_str(u.syntax().text().as_bytes())),
@@ -840,11 +885,14 @@ impl<'a> Compiler<'a> {
                 self.expr(&child(i.body())?)?,
                 self.expr(&child(i.else_body())?)?,
             ),
-            ast::Expr::Assert(a) => Expr::Assert {
-                cond: self.expr(&child(a.condition())?)?,
-                body: self.expr(&child(a.body())?)?,
-                pos,
-            },
+            ast::Expr::Assert(a) => {
+                let cond = child(a.condition())?;
+                Expr::Assert {
+                    cond: self.expr(&cond)?,
+                    body: self.expr(&child(a.body())?)?,
+                    pos: self.pos(&cond),
+                }
+            }
             ast::Expr::With(w) => {
                 let namespace = self.expr(&child(w.namespace())?)?;
                 self.scopes.push(Scope::With);
@@ -864,7 +912,7 @@ impl<'a> Compiler<'a> {
                         let zero = self.leak(Expr::Int(0));
                         self.call(self.ctx.syms.sub, &[zero, inner], pos)?
                     }
-                    None => return err(format!("syntax error: unknown unary operator at {pos}")),
+                    None => return err_at(pos, "syntax error: unknown unary operator"),
                 }
             }
             ast::Expr::BinOp(b) => self.binop(b, pos)?,
@@ -876,7 +924,7 @@ impl<'a> Compiler<'a> {
             ast::Expr::LetIn(l) => {
                 let set = self.preset(l.entries())?;
                 if !set.dynamics.is_empty() {
-                    return err(format!("dynamic attributes not allowed in let at {pos}"));
+                    return err_at(pos, "dynamic attributes not allowed in let");
                 }
                 let b = self.bindings(set, true, |c| c.expr(&child(l.body())?))?;
                 Expr::Let(self.ctx.alloc(LetDef {
@@ -901,7 +949,7 @@ impl<'a> Compiler<'a> {
 
     fn binop(&mut self, b: &ast::BinOp, pos: Pos<'a>) -> CResult<Expr<'a>> {
         let Some(op) = b.operator() else {
-            return err(format!("syntax error: unknown operator at {pos}"));
+            return err_at(pos, "syntax error: unknown operator");
         };
         let lhs = self.expr(&child(b.lhs())?)?;
         let rhs = self.expr(&child(b.rhs())?)?;
@@ -910,7 +958,7 @@ impl<'a> Compiler<'a> {
             .children_with_tokens()
             .filter_map(|t| t.into_token())
             .find(|t| ast::BinOpKind::from_kind(t.kind()).is_some())
-            .map(|t| self.at(u32::from(t.text_range().start())))
+            .map(|t| self.at(t.text_range()))
             .unwrap_or(pos);
         let s = &self.ctx.syms;
         // Nix desugars these operators to calls of builtins named by
@@ -940,9 +988,10 @@ impl<'a> Compiler<'a> {
             ast::BinOpKind::NotEqual => BinOp::Neq,
             ast::BinOpKind::Or => BinOp::Or,
             ast::BinOpKind::PipeRight | ast::BinOpKind::PipeLeft => {
-                return err(format!(
-                    "experimental Nix feature 'pipe-operators' is disabled at {op_pos}"
-                ));
+                return err_at(
+                    op_pos,
+                    "experimental Nix feature 'pipe-operators' is disabled",
+                );
             }
         };
         Ok(Expr::Bin(op, lhs, rhs, op_pos))
@@ -971,11 +1020,11 @@ impl<'a> Compiler<'a> {
                 for entry in p.pat_entries() {
                     let n = self.ident(&child(entry.ident())?)?;
                     if names.contains(&n) {
-                        return err(format!(
-                            "duplicate formal function argument '{}' at {}",
-                            self.name(n),
-                            self.pos(&entry)
-                        ));
+                        return err_labelled(
+                            self.pos(&entry),
+                            format!("duplicate formal function argument '{}'", self.name(n)),
+                            "duplicate",
+                        );
                     }
                     names.push(n);
                     entries.push(entry);
@@ -984,11 +1033,11 @@ impl<'a> Compiler<'a> {
                     Some(b) => {
                         let n = self.ident(&child(b.ident())?)?;
                         if names.contains(&n) {
-                            return err(format!(
-                                "duplicate formal function argument '{}' at {}",
-                                self.name(n),
-                                self.pos(&b)
-                            ));
+                            return err_labelled(
+                                self.pos(&b),
+                                format!("duplicate formal function argument '{}'", self.name(n)),
+                                "duplicate",
+                            );
                         }
                         Some(n)
                     }
@@ -1068,9 +1117,10 @@ impl<'a> Compiler<'a> {
                     let text = l.text();
                     if i == 0 {
                         if l.is_home() && self.pure {
-                            return err(format!(
-                                "the path '{text}' can not be resolved in pure mode at {pos}"
-                            ));
+                            return err_at(
+                                pos,
+                                format!("the path '{text}' can not be resolved in pure mode"),
+                            );
                         }
                         let resolved = self.resolve_path_literal(text, l.is_home());
                         let path = self.ctx.alloc(PathV(self.ctx.alloc_str(&resolved)));
@@ -1125,10 +1175,10 @@ impl<'a> Compiler<'a> {
             ast::Attr::Ident(i) => AttrName::Static(self.ident(i)?),
             // Nix's grammar only allows `"` strings as attribute names.
             ast::Attr::Str(s) if s.syntax().first_token().is_some_and(|t| t.text() == "''") => {
-                return err(format!(
-                    "syntax error: unexpected start of an indented string at {}",
-                    self.pos(s)
-                ));
+                return err_at(
+                    self.pos(s),
+                    "syntax error: unexpected start of an indented string",
+                );
             }
             ast::Attr::Str(s) => match static_str(s) {
                 Some(lit) => AttrName::Static(self.ctx.intern(&lit)),
@@ -1175,19 +1225,16 @@ impl<'a> Compiler<'a> {
                     None => None,
                 };
                 for attr in inh.attrs() {
-                    let off = offset(&attr);
+                    let off = attr.syntax().text_range();
                     let AttrName::Static(name) = self.attr_name(&attr)? else {
-                        return err(format!(
-                            "dynamic attributes not allowed in inherit at {}",
-                            self.at(off)
-                        ));
+                        return err_at(self.at(off), "dynamic attributes not allowed in inherit");
                     };
                     if set.statics.iter().any(|(n, _, _)| *n == name) {
-                        return err(format!(
-                            "attribute '{}' already defined at {}",
-                            self.name(name),
-                            self.at(off)
-                        ));
+                        return err_labelled(
+                            self.at(off),
+                            format!("attribute '{}' already defined", self.name(name)),
+                            "already defined",
+                        );
                     }
                     let value = match from {
                         Some(i) => PreAttr::InheritFrom(i, name, off),
@@ -1201,7 +1248,7 @@ impl<'a> Compiler<'a> {
     }
 
     fn insert_path(&self, set: &mut PreSet, path: &[ast::Attr], value: ast::Expr) -> CResult<()> {
-        let off = offset(&path[0]);
+        let off = path[0].syntax().text_range();
         let rest = &path[1..];
         let leaf = |c: &Self, value: ast::Expr| -> CResult<PreAttr> {
             if rest.is_empty() {
@@ -1226,11 +1273,11 @@ impl<'a> Compiler<'a> {
             return Ok(());
         };
         let already = || {
-            err(format!(
-                "attribute '{}' already defined at {}",
-                self.name(name),
-                self.at(off)
-            ))
+            err_labelled(
+                self.at(off),
+                format!("attribute '{}' already defined", self.name(name)),
+                "already defined",
+            )
         };
         // Two definitions merge only when both are attribute sets:
         // `a.b = 1; a.c = 2;` or `a = { b = 1; }; a.c = 2;`. The merged set
@@ -1607,6 +1654,8 @@ fn static_str(s: &ast::Str) -> Option<String> {
 fn child<T>(o: Option<T>) -> CResult<T> {
     o.ok_or_else(|| CompileError {
         msg: "syntax error: incomplete expression".into(),
+        span: None,
+        label: None,
     })
 }
 

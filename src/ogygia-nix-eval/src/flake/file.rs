@@ -208,7 +208,7 @@ pub fn load<'a>(ev: &Eval<'a>, dir: &str, shown: &str) -> R<'a, Flake<'a>> {
             "source tree referenced by '{shown}' does not contain a '/flake.nix' file"
         ));
     }
-    let expr = ev.ctx.compile_file(&file).map_err(anyhow_err)?;
+    let expr = ev.ctx.compile_file(&file)?;
     if !matches!(expr, Expr::Attrs(_)) {
         return eval_err(format!("file '{file}' must be an attribute set"));
     }
