@@ -3214,7 +3214,7 @@ name = "ogygia-clevis"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "base64 0.22.1",
+ "base64 0.23.1",
  "clap",
  "futures",
  "reqwest",
@@ -3233,7 +3233,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
  "clap",
  "enum-map",
@@ -3276,7 +3276,7 @@ dependencies = [
  "arc-swap",
  "async-compression",
  "axum",
- "base64 0.22.1",
+ "base64 0.23.1",
  "bincode",
  "bytes",
  "clap",
@@ -3329,7 +3329,7 @@ name = "ogygia-nix-eval"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "base64 0.22.1",
+ "base64 0.23.1",
  "bumpalo",
  "bzip2",
  "enum-map",
@@ -3392,7 +3392,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-stream",
- "base64 0.22.1",
+ "base64 0.23.1",
  "deadpool-sqlite",
  "futures",
  "hex",
