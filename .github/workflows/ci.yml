@@ -645,7 +645,7 @@ jobs:
 
   single-commit:
     if: github.event_name == 'merge_group'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
 
     steps:
     - name: Checkout code
@@ -665,7 +665,7 @@ jobs:
   all-checks:
     needs: [nix, apple-gate, apple-apps, single-commit]
     if: always()
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
 
     steps:
     # apple-apps may only be skipped when the gate found no app to build.
