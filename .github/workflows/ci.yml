@@ -79,6 +79,7 @@ jobs:
     outputs:
       macos: ${{ steps.compare.outputs.macos }}
       ios: ${{ steps.compare.outputs.ios }}
+      runner: ${{ steps.compare.outputs.runner }}
 
     steps:
     # A pull request's own head rather than its merge with the base, so
@@ -168,6 +169,7 @@ jobs:
             ;;
         esac
 
+        echo "runner=$(< .github/macos-apps-runner)" >> "$GITHUB_OUTPUT"
         head="$(git rev-parse HEAD)"
         for app in macos ios; do
           base="${app}_base"
@@ -185,7 +187,7 @@ jobs:
   apple-apps:
     needs: [apple-gate, nix]
     if: needs.apple-gate.outputs.macos == 'true' || needs.apple-gate.outputs.ios == 'true'
-    runs-on: xcode-27
+    runs-on: ${{ needs.apple-gate.outputs.runner }}
 
     env:
       MACOS: ${{ needs.apple-gate.outputs.macos }}
@@ -286,7 +288,7 @@ jobs:
     if: >-
       github.event_name == 'push' && github.ref == 'refs/heads/main' &&
       needs.apple-gate.outputs.macos == 'true'
-    runs-on: xcode-27
+    runs-on: ${{ needs.apple-gate.outputs.runner }}
 
     # Releases run one at a time; a newer queued release replaces an older
     # pending one. Builds finish in any order, so the first step also skips
@@ -508,7 +510,7 @@ jobs:
     if: >-
       github.event_name == 'push' && github.ref == 'refs/heads/main' &&
       needs.apple-gate.outputs.ios == 'true'
-    runs-on: xcode-27
+    runs-on: ${{ needs.apple-gate.outputs.runner }}
 
     # Releases run one at a time; a newer queued release replaces an older
     # pending one. Builds finish in any order, so the first step also skips
