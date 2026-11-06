@@ -31,7 +31,7 @@
     # Nix master, pinned by rev so that `nix flake update` and Renovate's
     # lock file maintenance leave it alone; Renovate moves it to master in a
     # PR of its own. It builds with its own nixpkgs, as Nix's CI tests it.
-    nix.url = "github:NixOS/nix/6da91c447200d61ac6209fda451f7d9329fc9dc2";
+    nix.url = "github:NixOS/nix/9a873a513e51e2207c6358def4e1aead99c1ff94";
   };
 
   outputs = { self, nixpkgs, flake-utils, treefmt-nix, fenix, crane, advisory-db, nix-fast-build, nix }:
