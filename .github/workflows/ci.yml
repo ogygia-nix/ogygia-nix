@@ -183,7 +183,7 @@ jobs:
   # Builds the apps that changed, as the check that they still build, and
   # on a push to main for the release jobs.
   apple-apps:
-    needs: apple-gate
+    needs: [apple-gate, nix]
     if: needs.apple-gate.outputs.macos == 'true' || needs.apple-gate.outputs.ios == 'true'
     runs-on: xcode-27
 
