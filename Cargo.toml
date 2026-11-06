@@ -111,7 +111,7 @@ which = "7"
 bumpalo = "3"
 lasso = { version = "0.7", features = ["multi-threaded"] }
 md-5 = "0.10"
-num-bigint = "0.4"
+num-bigint = "0.5"
 sha1 = "0.10"
 regex = "1"
 regex-automata = "0.4"
