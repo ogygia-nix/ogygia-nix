@@ -23,7 +23,7 @@ toml = "1.0"
 toml_parser = "1.1"
 etcd-client = "0.19"
 hostname = "0.4"
-strum = { version = "0.27", features = ["derive"] }
+strum = { version = "0.28", features = ["derive"] }
 
 # HTTP server
 axum = { version = "0.8", features = ["http2"] }
