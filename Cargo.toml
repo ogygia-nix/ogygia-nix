@@ -105,7 +105,7 @@ core-foundation = "0.10"
 core-foundation-sys = "0.8"
 
 # Process utilities
-which = "7"
+which = "8"
 
 # Nix evaluation
 bumpalo = "3"
