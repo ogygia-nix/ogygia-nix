@@ -12,7 +12,7 @@
       "automerge": true
     }
   ],
-  "rebaseWhen": "behind-base-branch",
+  "rebaseWhen": "conflicted",
   "schedule": ["after 11pm on Monday"],
   "extends": [
     ":semanticCommits",
