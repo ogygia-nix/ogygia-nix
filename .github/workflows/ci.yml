@@ -11,9 +11,9 @@ jobs:
     strategy:
       matrix:
         os:
-          - ubuntu-24.04
-          - ubuntu-24.04-arm
-          - macos-26
+          - ubuntu-24.04 # renovate: github-runner
+          - ubuntu-24.04-arm # renovate: github-runner
+          - macos-26 # renovate: github-runner
 
     runs-on: ${{ matrix.os }}
 
