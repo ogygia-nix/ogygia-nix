@@ -18,6 +18,16 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
+    - name: Stop if the merge queue dropped this entry
+      if: github.event_name == 'merge_group'
+      run: |
+        status=0
+        git ls-remote --exit-code "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" "$GITHUB_REF" > /dev/null || status=$?
+        if [ "$status" = 2 ]; then
+          echo "::error::$GITHUB_REF is gone: the merge queue dropped this entry"
+          exit 1
+        fi
+
     - name: Checkout code
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
@@ -196,6 +206,16 @@ jobs:
       IOS_APP: ogygia-ios/Applications/Ogygia.app
 
     steps:
+    - name: Stop if the merge queue dropped this entry
+      if: github.event_name == 'merge_group'
+      run: |
+        status=0
+        git ls-remote --exit-code "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" "$GITHUB_REF" > /dev/null || status=$?
+        if [ "$status" = 2 ]; then
+          echo "::error::$GITHUB_REF is gone: the merge queue dropped this entry"
+          exit 1
+        fi
+
     - name: Checkout code
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       with:
