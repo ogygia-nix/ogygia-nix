@@ -21,7 +21,7 @@ use serde::Serialize;
 /// branch-following mode slots in later without touching the lifecycle
 /// or the engine's floor, expiry, and finish handling, which are all
 /// target-agnostic.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "mode", rename_all = "snake_case")]
 pub enum CanaryTarget {
     /// A commit resolved when the canary was issued. `branch` is kept for
@@ -31,7 +31,7 @@ pub enum CanaryTarget {
 }
 
 /// How a trial is held on the host, and so what a reboot does to it.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "mode", rename_all = "snake_case")]
 pub enum CanaryHold {
     /// An ephemeral test activation, with a safe floor staged for boot. A
@@ -45,7 +45,7 @@ pub enum CanaryHold {
 }
 
 /// Lifecycle of the current or most-recent canary.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum CanaryState {
     /// A trial in progress.
@@ -80,18 +80,6 @@ pub enum FinishReason {
     Overwritten,
 }
 
-impl FinishReason {
-    pub(crate) fn label(self) -> &'static str {
-        match self {
-            FinishReason::Merged => "merged",
-            FinishReason::Expired => "expired",
-            FinishReason::Cleared => "cleared",
-            FinishReason::Rebooted => "rebooted",
-            FinishReason::Overwritten => "overwritten",
-        }
-    }
-}
-
 impl CanaryState {
     /// Load the record, or `None` if no canary has ever run.
     pub fn load(path: &Path) -> Result<Option<Self>> {
@@ -106,46 +94,6 @@ impl CanaryState {
         let state = serde_json::from_str(&raw)
             .with_context(|| format!("parsing canary state {}", path.display()))?;
         Ok(Some(state))
-    }
-
-    /// A human-readable status line. `running` and `next_boot` are the
-    /// commits the host currently runs and will next boot; they are only
-    /// rendered for an in-progress trial.
-    pub fn describe(&self, now: DateTime<Utc>, running: &str, next_boot: &str) -> String {
-        match self {
-            CanaryState::Active {
-                target: CanaryTarget::Pinned { branch, commit },
-                expires_at,
-                hold,
-            } => {
-                let expiry = match expires_at {
-                    Some(at) => format!(
-                        "expires {} (in {}h)",
-                        at.format("%Y-%m-%d %H:%MZ"),
-                        (*at - now).num_hours()
-                    ),
-                    None => "no timeout".to_string(),
-                };
-                // An ephemeral trial's next-boot commit is the floor it
-                // falls back to; a persistent one's is the trial itself.
-                let boot = match hold {
-                    CanaryHold::Ephemeral { .. } => format!("boot floor {next_boot}"),
-                    CanaryHold::Persistent => {
-                        format!("boot default {next_boot}, kept across reboot")
-                    }
-                };
-                format!("trialling {branch} @{commit}; running {running}, {boot}; {expiry}")
-            }
-            CanaryState::Finished {
-                target: CanaryTarget::Pinned { branch, commit },
-                at,
-                reason,
-            } => format!(
-                "no active canary; last: {branch} @{commit} finished {} ({})",
-                at.format("%Y-%m-%d %H:%MZ"),
-                reason.label(),
-            ),
-        }
     }
 
     /// Persist the record, replacing any previous one atomically.
@@ -226,59 +174,5 @@ mod tests {
                 ..
             })
         ));
-    }
-
-    #[test]
-    fn describe_covers_active_and_finished() {
-        let now: DateTime<Utc> = "2026-07-17T00:00:00Z".parse().unwrap();
-        let target = CanaryTarget::Pinned {
-            branch: "feature".to_string(),
-            commit: "abc".to_string(),
-        };
-
-        let ephemeral = CanaryHold::Ephemeral {
-            boot_id: "boot-1".to_string(),
-        };
-
-        let active = CanaryState::Active {
-            target: target.clone(),
-            expires_at: Some("2026-07-18T00:00:00Z".parse().unwrap()),
-            hold: ephemeral.clone(),
-        };
-        assert_eq!(
-            active.describe(now, "def", "ghi"),
-            "trialling feature @abc; running def, boot floor ghi; expires 2026-07-18 00:00Z (in 24h)"
-        );
-
-        let forever = CanaryState::Active {
-            target: target.clone(),
-            expires_at: None,
-            hold: ephemeral,
-        };
-        assert_eq!(
-            forever.describe(now, "def", "ghi"),
-            "trialling feature @abc; running def, boot floor ghi; no timeout"
-        );
-
-        // A persistent trial is the next-boot system, not a floor under it.
-        let persistent = CanaryState::Active {
-            target: target.clone(),
-            expires_at: None,
-            hold: CanaryHold::Persistent,
-        };
-        assert_eq!(
-            persistent.describe(now, "abc", "abc"),
-            "trialling feature @abc; running abc, boot default abc, kept across reboot; no timeout"
-        );
-
-        let finished = CanaryState::Finished {
-            target,
-            at: now,
-            reason: FinishReason::Merged,
-        };
-        assert_eq!(
-            finished.describe(now, "def", "ghi"),
-            "no active canary; last: feature @abc finished 2026-07-17 00:00Z (merged)"
-        );
     }
 }

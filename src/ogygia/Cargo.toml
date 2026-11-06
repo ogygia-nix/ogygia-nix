@@ -20,6 +20,8 @@ nebula = [
     "dep:ogygia-nixutils",
 ]
 updated = [
+    "dep:chrono",
+    "dep:serde_json",
     "dep:ogygia-updated",
     "dep:humantime",
 ]
