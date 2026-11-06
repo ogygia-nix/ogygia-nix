@@ -10,6 +10,10 @@
     {
       "matchManagers": ["github-actions", "nix"],
       "automerge": true
+    },
+    {
+      "matchManagers": ["cargo"],
+      "rangeStrategy": "replace"
     }
   ],
   "rebaseWhen": "behind-base-branch",
