@@ -16,6 +16,16 @@
       "rangeStrategy": "replace"
     }
   ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/^\\.github/workflows/[^/]+\\.ya?ml$/"],
+      "matchStrings": [
+        "(?<depName>ubuntu|macos|windows)-(?<currentValue>[0-9.]+(?:-arm)?)\\s+# renovate: github-runner"
+      ],
+      "datasourceTemplate": "github-runners"
+    }
+  ],
   "rebaseWhen": "conflicted",
   "schedule": ["after 11pm on Monday"],
   "extends": [
