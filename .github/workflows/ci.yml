@@ -16,6 +16,7 @@ jobs:
           - macos-26 # renovate: github-runner
 
     runs-on: ${{ matrix.os }}
+    if: github.event_name != 'push'
 
     steps:
     - name: Stop if the merge queue dropped this entry
@@ -196,7 +197,10 @@ jobs:
   # on a push to main for the release jobs.
   apple-apps:
     needs: [apple-gate, nix]
-    if: needs.apple-gate.outputs.macos == 'true' || needs.apple-gate.outputs.ios == 'true'
+    if: >-
+      !cancelled() && needs.apple-gate.result == 'success' &&
+      (needs.nix.result == 'success' || github.event_name == 'push') &&
+      (needs.apple-gate.outputs.macos == 'true' || needs.apple-gate.outputs.ios == 'true')
     runs-on: ${{ needs.apple-gate.outputs.runner }}
 
     env:
@@ -692,7 +696,9 @@ jobs:
     # apple-apps may only be skipped when the gate found no app to build.
     - name: Require every check job to pass
       run: |
-        test "${{ needs.nix.result }}" = success
+        if [ "${{ github.event_name }}" != push ]; then
+          test "${{ needs.nix.result }}" = success
+        fi
         test "${{ needs.apple-gate.result }}" = success
         case "${{ needs.apple-apps.result }}" in
           success) ;;
