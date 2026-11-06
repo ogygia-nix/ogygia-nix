@@ -141,6 +141,11 @@ let
         "/usr/bin/touch"
       ];
 
+      # The apps build against the runner's macOS through the host deps
+      # above, which the derivation does not otherwise record. Naming the
+      # runner makes moving the apps to another runner a change to them.
+      runner = lib.fileContents ../../.github/macos-apps-runner;
+
       configurePhase = ''
         runHook preConfigure
 
