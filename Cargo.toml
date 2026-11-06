@@ -56,7 +56,7 @@ deadpool-sqlite = "0.13"
 
 # Integration testing against a real Nix store
 testcontainers = "0.28"
-rstest = "0.26"
+rstest = "0.28"
 
 # Cache
 moka = { version = "0.12", features = ["future"] }
