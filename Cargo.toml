@@ -98,7 +98,7 @@ async-stream = "0.3"
 thiserror = "2"
 
 # Filesystem watching
-notify = { version = "7", default-features = false, features = ["macos_fsevent"] }
+notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
 
 # macOS preferences (the `defaults` system)
 core-foundation = "0.10"
