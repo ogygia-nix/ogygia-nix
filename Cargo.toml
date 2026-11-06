@@ -89,7 +89,7 @@ gix = { version = "0.90", default-features = false, features = ["sha1", "index",
 tempfile = "3.0"
 
 # Enums
-enum-map = "2.7"
+enum-map = "3.0"
 
 # Utilities
 bytes = "1"
