@@ -342,10 +342,42 @@
 
             # The ogygia-nix-eval differential fuzzer, instrumented by cargo-fuzz.
             # Its use is described in src/ogygia-nix-eval-fuzz/README.md.
-            ogygia-nix-eval-fuzz = craneLib.mkCargoDerivation (commonArgs // {
-              pname = "ogygia-nix-eval-fuzz";
+            fuzzArgs = commonArgs // {
+              # Only the crates it builds, so other members' changes leave it
+              # and its dependencies alone.
+              src = lib.fileset.toSource {
+                root = ./.;
+                fileset = lib.fileset.unions [
+                  ./Cargo.toml
+                  ./Cargo.lock
+                  (craneLib.fileset.commonCargoSources ./src/ogygia-nix-eval)
+                  (craneLib.fileset.commonCargoSources ./src/ogygia-nix-eval-fuzz)
+                  ./src/ogygia-nix-eval-fuzz/README.md
+                ];
+              };
               inherit version;
-              cargoArtifacts = null;
+              nativeBuildInputs = commonArgs.nativeBuildInputs ++ [ pkgs.cargo-fuzz ];
+              buildPhaseCargoCommand = ''
+                cargo fuzz build --sanitizer none --release \
+                  --fuzz-dir src/ogygia-nix-eval-fuzz ogygia-nix-eval-fuzz
+              '';
+            };
+
+            fuzzCargoArtifacts = craneLib.buildDepsOnly (fuzzArgs // {
+              pname = "ogygia-nix-eval-fuzz";
+              doCheck = false;
+              # cargo-fuzz refuses a crate without this metadata, which crane's
+              # dummy manifests drop, and the instrumented binary only links
+              # when its main uses libfuzzer-sys.
+              preBuild = ''
+                printf '\n[package.metadata]\ncargo-fuzz = true\n' >> src/ogygia-nix-eval-fuzz/Cargo.toml
+                echo '#![no_main] libfuzzer_sys::fuzz_target!(|_d: &[u8]| {});' > src/ogygia-nix-eval-fuzz/src/main.rs
+              '';
+            });
+
+            ogygia-nix-eval-fuzz = craneLib.mkCargoDerivation (fuzzArgs // {
+              pname = "ogygia-nix-eval-fuzz";
+              cargoArtifacts = fuzzCargoArtifacts;
               doInstallCargoArtifacts = false;
               env = {
                 OGYGIA_NIX_INSTANTIATE_BIN = "${referenceNix}/bin/nix-instantiate";
@@ -353,11 +385,6 @@
                 OGYGIA_NIX_EVAL_NIX_VERSION = referenceNix.version;
                 OGYGIA_NIX_EVAL_FUZZ_SEEDS = "${fuzzSeeds}";
               };
-              nativeBuildInputs = commonArgs.nativeBuildInputs ++ [ pkgs.cargo-fuzz ];
-              buildPhaseCargoCommand = ''
-                cargo fuzz build --sanitizer none --release \
-                  --fuzz-dir src/ogygia-nix-eval-fuzz ogygia-nix-eval-fuzz
-              '';
               installPhaseCommand = ''
                 install -D -t $out/bin \
                   target/${pkgs.stdenv.hostPlatform.rust.rustcTarget}/release/ogygia-nix-eval-fuzz
