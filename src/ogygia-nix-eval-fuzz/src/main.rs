@@ -19,6 +19,8 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::OnceLock;
+use std::sync::atomic::AtomicU8;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -92,12 +94,23 @@ macro_rules! report {
     };
 }
 
+/// libFuzzer's extra counters, which it clears before each input and
+/// counts as coverage after it: one for each slot the
+/// [features](ogygia_nix_eval_fuzz::features) of Nix's run hash to.
+#[used]
+#[unsafe(link_section = "__libfuzzer_extra_counters")]
+static NIX_FEATURES: [AtomicU8; 1 << 16] = [const { AtomicU8::new(0) }; 1 << 16];
+
 fuzz_target!(|data: &[u8]| {
     let Ok(src) = std::str::from_utf8(data) else {
         return;
     };
     let options = OPTIONS.get().expect("options are set before fuzzing");
     let outcome = ogygia_nix_eval_fuzz::check(src, Budget::Fuzzing);
+    for feature in ogygia_nix_eval_fuzz::features() {
+        let slot = (feature % NIX_FEATURES.len() as u64) as usize;
+        NIX_FEATURES[slot].store(1, Ordering::Relaxed);
+    }
     if let Outcome::Diverged(report) = &outcome {
         match &options.findings {
             Some(dir) => {

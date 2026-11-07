@@ -28,6 +28,7 @@ use strum::EnumString;
 use strum::IntoStaticStr;
 
 use crate::cgroup::Cgroup;
+use crate::features;
 use crate::skip;
 use crate::skip::Evidence;
 use crate::skip::Skip;
@@ -177,11 +178,17 @@ pub(crate) struct Theirs {
     pub(crate) run: Run,
     /// The store it ran with, if it ran.
     pub(crate) store: Option<Store>,
+    /// The statistics it wrote, as JSON, if it wrote any.
+    pub(crate) stats: Option<String>,
 }
 
 impl From<Run> for Theirs {
     fn from(run: Run) -> Theirs {
-        Theirs { run, store: None }
+        Theirs {
+            run,
+            store: None,
+            stats: None,
+        }
     }
 }
 
@@ -219,6 +226,11 @@ impl Store {
             &format!("{}/nix/store", self.0.path().display()),
             "/nix/store",
         )
+    }
+
+    /// Where a Nix run with this store writes its evaluation statistics.
+    fn stats(&self) -> PathBuf {
+        self.0.path().join("stats.json")
     }
 
     /// Where the store directory, `/nix/store`, is on disk.
@@ -287,6 +299,9 @@ pub(crate) fn nix_command(program: &str, store: &Store) -> Command {
         .env("NIX_CONF_DIR", s.join("conf"))
         .env("NIX_LOG_DIR", s.join("log"))
         .env("XDG_CACHE_HOME", s.join("cache"))
+        .env("NIX_SHOW_STATS", "1")
+        .env("NIX_COUNT_CALLS", "1")
+        .env("NIX_SHOW_STATS_PATH", store.stats())
         .envs(PROXY_VARS.iter().map(|v| (v, DEAD_PROXY)));
     cmd
 }
@@ -297,6 +312,8 @@ pub(crate) struct Ran {
     pub success: bool,
     pub stdout: String,
     pub stderr: String,
+    /// The evaluation statistics it wrote, as JSON, if it wrote any.
+    pub stats: Option<String>,
 }
 
 /// Run `cmd`, made by [`nix_command`] for `store`, within `budget`, writing
@@ -358,6 +375,8 @@ fn run_within(
     let stdout = store.unroot(&String::from_utf8_lossy(&stdout.join().unwrap()));
     let stderr = store.unroot(&String::from_utf8_lossy(&stderr.join().unwrap()));
     let status = status?;
+    let stats = std::fs::read_to_string(store.stats()).ok();
+    std::fs::remove_file(store.stats()).ok();
     if out_of_memory || exhausted(&stderr) {
         return Err(Outcome::Skipped);
     }
@@ -368,6 +387,7 @@ fn run_within(
         success: status.success(),
         stdout,
         stderr,
+        stats,
     })
 }
 
@@ -391,6 +411,7 @@ pub(crate) fn run_nix(mode: &[&str], expr: &str, budget: Budget) -> Result<Their
             Err(ran.stderr)
         },
         store: Some(store),
+        stats: ran.stats,
     })
 }
 
@@ -560,6 +581,7 @@ pub fn check(src: &str, budget: Budget) -> Outcome {
     if let Some(skip) = Skip::find(&Evidence::Input(src)) {
         return Outcome::DeliberateDivergence(skip);
     }
+    crate::features::reset();
     if crate::bundle::is_bundle(src) {
         return crate::flake::check(src, budget);
     }
@@ -594,7 +616,10 @@ pub(crate) fn check_with(
         Err(panic) => return panicked(src, src, &panic),
     };
     let theirs = match nix(&["--parse"], src) {
-        Ok(theirs) => theirs.run,
+        Ok(theirs) => {
+            features::observe("parse", &theirs.run, theirs.stats.as_deref());
+            theirs.run
+        }
         Err(outcome) => return outcome,
     };
     if theirs.is_ok() != ours.is_ok() {
@@ -611,6 +636,7 @@ pub(crate) fn check_with(
         Ok(theirs) => theirs,
         Err(outcome) => return outcome,
     };
+    features::observe("eval", &theirs.run, theirs.stats.as_deref());
     let ours = match run_ours(&eval, src, &expr) {
         Ok(ours) => ours,
         Err(outcome) => return outcome,
@@ -634,6 +660,7 @@ pub(crate) fn check_with(
         Ok(theirs) => theirs,
         Err(outcome) => return outcome,
     };
+    features::observe("catch", &theirs.run, theirs.stats.as_deref());
     let ours = match run_ours(&eval, src, &expr) {
         Ok(ours) => ours,
         Err(outcome) => return outcome,

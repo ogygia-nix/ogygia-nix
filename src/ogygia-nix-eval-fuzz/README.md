@@ -101,6 +101,7 @@ leave out every quoted source line.
 
 libFuzzer drives the search. It keeps an input in the corpus when it
 reaches code in ogygia-nix-eval (or rnix) that no earlier input reached,
+or on which Nix's output shows something new, as described below,
 and makes new inputs by mutating and combining corpus entries. Its own
 byte-level mutations, which can turn any input into any other, run
 alongside mutations that replace, delete, copy, swap and splice whole nodes
@@ -238,10 +239,15 @@ from `$OGYGIA_NIX_INSTANTIATE_BIN`, else found on `PATH`.
 Nothing is ruled out by construction: every UTF-8 text is a possible input
 and Nix is the reference. What a run actually explores is another matter.
 
-- Coverage guidance rewards inputs that reach new code in ogygia-nix-eval.
-  It cannot steer towards Nix behaviour that ogygia-nix-eval does not
-  implement at all, as there is no code of ours to reach; the seeds are
-  what lead it there.
+- Coverage guidance rewards inputs that reach new code in ogygia-nix-eval,
+  and inputs on which Nix does something new: a step succeeding or
+  failing, an error message or trace frame, or a pair of adjacent ones,
+  with its strings, paths, numbers and printed values left out, the order
+  of magnitude of an evaluation statistic or of a primop's calls, or a pair
+  of adjacent tokens of what `--parse` printed, up to 1024 per input.
+  Nix's output is all it sees of Nix, so Nix behaviour that
+  ogygia-nix-eval does not implement and that changes none of it stays
+  out of reach; the seeds are what lead it there.
 - New code paths stop appearing long before an evaluator's behaviour is
   exhausted, so a run whose coverage has levelled off can still find
   divergences, just more slowly.

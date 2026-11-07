@@ -521,6 +521,7 @@ mod tests {
                         std::fs::create_dir_all(store.dir().join("x")).unwrap();
                         store
                     }),
+                    stats: None,
                 })
             }
         };

@@ -24,6 +24,7 @@ use crate::check::run_command;
 use crate::check::run_ours;
 use crate::check::scratch;
 use crate::check::settings;
+use crate::features;
 use crate::skip::Evidence;
 use crate::skip::Skip;
 
@@ -291,8 +292,9 @@ fn strip_quotes(stderr: &str) -> String {
         .collect()
 }
 
-/// What Nix did with one `nix eval`.
+/// What Nix did with one `nix eval`, at `step`.
 fn nix_eval(
+    step: &str,
     reference: &str,
     apply: &str,
     trees: &Trees,
@@ -313,12 +315,15 @@ fn nix_eval(
         success,
         stdout,
         stderr,
+        stats,
     } = run_command(cmd, b"", store, budget)?;
-    Ok(if success {
+    let run = if success {
         Ok(stdout.strip_suffix('\n').unwrap_or(&stdout).to_owned())
     } else {
         Err(strip_quotes(&stderr))
-    })
+    };
+    features::observe(&format!("flake-{step}"), &run, stats.as_deref());
+    Ok(run)
 }
 
 /// The [deliberate divergence](Outcome::DeliberateDivergence) of a bundle
@@ -368,7 +373,13 @@ fn check_bundle(
         let flake = reference.split_once('#').map_or(&*reference, |(f, _)| f);
         let mut cmd = flake_command(store, &work.join("cache"), &trees.cwd);
         cmd.args(["flake", "lock", flake]);
-        run_command(cmd, b"", store, budget)?;
+        let ran = run_command(cmd, b"", store, budget)?;
+        let run = if ran.success {
+            Ok(ran.stdout)
+        } else {
+            Err(ran.stderr)
+        };
+        features::observe("lock", &run, ran.stats.as_deref());
         // Locking writes the lock file now.
         set_mtimes(&trees.cwd);
     }
@@ -388,7 +399,7 @@ fn check_bundle(
     for (step, apply) in steps {
         let command =
             format!("nix eval --json --no-update-lock-file --apply '{apply}' '{reference}'");
-        let theirs = nix_eval(&reference, &apply, &trees, store, work, budget)?;
+        let theirs = nix_eval(step, &reference, &apply, &trees, store, work, budget)?;
         let ours = run_ours(
             |_| ogygia_nix_eval::eval_flake_json(&reference, &apply, &env, settings()),
             src,
