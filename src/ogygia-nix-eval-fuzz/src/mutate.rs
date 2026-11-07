@@ -1,12 +1,12 @@
 //! Mutations that edit whole nodes and tokens of rnix's syntax tree, insert
 //! Nix's keywords and operators between them, replace expressions with
 //! ones that fail, wrap them in `let`s binding `__findFile` and
-//! `__nixPath`, or give attribute sets attributes Nix treats specially or
-//! toggle their `rec`, so changes to an input stay meaningful Nix more
-//! often than byte edits do. They only make some inputs likelier:
-//! libFuzzer's byte-level mutations, which can turn any input into any
-//! other, run alongside them. In a flake bundle they edit the Nix files it
-//! holds, one at a time.
+//! `__nixPath`, give attribute sets attributes Nix treats specially or
+//! toggle their `rec`, or replace literals with edge cases, so changes to
+//! an input stay meaningful Nix more often than byte edits do. They only
+//! make some inputs likelier: libFuzzer's byte-level mutations, which can
+//! turn any input into any other, run alongside them. In a flake bundle
+//! they edit the Nix files it holds, one at a time.
 
 use std::ops::Range;
 
@@ -146,6 +146,66 @@ const NIX_PATH: &[&str] = &[
     "__nixPath = [ { prefix = \"nixpkgs\"; path = ./.; } ];",
     "__nixPath = [ { prefix = \"\"; path = \"/\"; } ];",
     "__nixPath = {};",
+];
+
+/// Numbers at the edges of what Nix's integers and floats hold, or of how
+/// it reads and prints them.
+const NUMBERS: &[&str] = &[
+    "0",
+    "(-1)",
+    "4294967296",
+    "9223372036854775807",
+    "9223372036854775808",
+    "(-9223372036854775807 - 1)",
+    "(-9223372036854775808)",
+    "0.0",
+    "(-0.0)",
+    "1.",
+    ".5",
+    "0.1",
+    "1.0e-7",
+    "123456789.123456789",
+    "100000000000000000000.0",
+    "1.7976931348623157e308",
+    "1.0e309",
+    "2.2250738585072014e-308",
+    "4.9e-324",
+];
+
+/// Strings at the edges of Nix's escapes, indentation and contents.
+const STRINGS: &[&str] = &[
+    "\"\"",
+    "\"\\n\\t\\r\"",
+    "\"\\\\\"",
+    "\"\\$\"",
+    "\"$${x}\"",
+    "\"\\0\"",
+    "\"é\"",
+    "\"😀\"",
+    "\"${\"\"}\"",
+    "''''",
+    "''\\t''",
+    "''$${x}''",
+    "'''''x''",
+    "''\n  a\n    b\n''",
+    "''\n\t a\n''",
+    "\"/nix/store/00000000000000000000000000000000-x\"",
+    "\"1.2.3pre4\"",
+    "\"sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=\"",
+];
+
+/// Paths at the edges of how Nix resolves and normalises them.
+const PATHS: &[&str] = &[
+    "./.",
+    "/.",
+    "../.",
+    "./a/../b",
+    "./a/./b",
+    "./x.nix",
+    "./${\"x\"}",
+    "~/x",
+    "/nix/store",
+    "<nix/fetchurl.nix>",
 ];
 
 fn splice(text: &str, range: TextRange, with: &str) -> String {
@@ -295,15 +355,40 @@ fn wrap_find_file(text: &str, elements: &[Element], rng: &mut Rng) -> String {
     splice(text, target.range, &wrapped)
 }
 
+/// Replace a number, string or path of `text` with an edge case of the
+/// same kind, or, when it has none, an expression with one of any kind.
+fn edge_literal(text: &str, elements: &[Element], rng: &mut Rng) -> String {
+    let literals: Vec<(&Element, &[&str])> = elements
+        .iter()
+        .filter(|e| e.expr)
+        .filter_map(|e| {
+            let edges = match e.kind {
+                NODE_LITERAL => NUMBERS,
+                NODE_STRING => STRINGS,
+                NODE_PATH_ABS | NODE_PATH_HOME | NODE_PATH_REL | NODE_PATH_SEARCH => PATHS,
+                _ => return None,
+            };
+            Some((e, edges))
+        })
+        .collect();
+    if literals.is_empty() {
+        let edges = [NUMBERS, STRINGS, PATHS][rng.below(3)];
+        let edge = edges[rng.below(edges.len())];
+        return splice(text, expr(elements, rng).range, &format!("({edge})"));
+    }
+    let (literal, edges) = literals[rng.below(literals.len())];
+    splice(text, literal.range, edges[rng.below(edges.len())])
+}
+
 /// Replace, delete, copy or swap whole nodes and tokens of `text`, insert a
-/// keyword or operator after one, or edit an expression or attribute set
-/// in one of the ways above.
+/// keyword or operator after one, or edit an expression, attribute set or
+/// literal in one of the ways above.
 fn mutate_tree(text: &str, rng: &mut Rng) -> String {
     let elements = elements(text);
     let a = elements[rng.below(elements.len())].range;
     let b = elements[rng.below(elements.len())].range;
     let piece = &text[b];
-    match rng.below(9) {
+    match rng.below(10) {
         0 => splice(text, a, piece),
         1 => splice(text, a, ""),
         2 => splice(text, TextRange::empty(a.end()), &format!(" {piece}")),
@@ -333,7 +418,8 @@ fn mutate_tree(text: &str, rng: &mut Rng) -> String {
         5 => inject_error(text, &elements, rng),
         6 => add_magic(text, &elements, rng),
         7 => toggle_rec(text, &elements, rng),
-        _ => wrap_find_file(text, &elements, rng),
+        8 => wrap_find_file(text, &elements, rng),
+        _ => edge_literal(text, &elements, rng),
     }
 }
 
@@ -485,6 +571,16 @@ mod tests {
                 "never {binding}"
             );
         }
+    }
+
+    #[test]
+    fn edge_literals_parse() {
+        let outs = valid_outputs(edge_literal);
+        for edge in [NUMBERS, STRINGS, PATHS].concat() {
+            assert!(outs.iter().any(|o| o.contains(edge)), "never {edge:?}");
+        }
+        let out = edge_literal("x", &elements("x"), &mut Rng::new(1));
+        assert!(out.starts_with('(') && out.ends_with(')'), "{out:?}");
     }
 
     fn no_fallback(_: &mut [u8], _: usize, _: usize) -> usize {
