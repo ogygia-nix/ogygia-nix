@@ -126,51 +126,15 @@
             };
             inherit (craneLib.crateNameFromCargoToml { inherit src; }) version;
 
-            fileSetForCrate = crate:
+            # The workspace manifests, the given crates' Cargo sources and any
+            # other files those crates read at build time.
+            fileSetForCrates = { crates, extra ? [ ] }:
               lib.fileset.toSource {
                 root = ./.;
-                fileset = lib.fileset.unions [
-                  ./Cargo.toml
-                  ./Cargo.lock
-                  (craneLib.fileset.commonCargoSources crate)
-                ];
+                fileset = lib.fileset.unions ([ ./Cargo.toml ./Cargo.lock ]
+                ++ map craneLib.fileset.commonCargoSources crates
+                ++ extra);
               };
-
-            dashboardSrc = lib.fileset.toSource {
-              root = ./.;
-              fileset = lib.fileset.unions [
-                ./Cargo.toml
-                ./Cargo.lock
-                (craneLib.fileset.commonCargoSources ./src/ogygia-dashboard)
-                ./src/ogygia-dashboard/src/web.css
-              ];
-            };
-
-            # ogygia-irisd depends on the ogygia-nixutils path crate, so both
-            # crates' sources must be present when building it.
-            irisdSrc = lib.fileset.toSource {
-              root = ./.;
-              fileset = lib.fileset.unions [
-                ./Cargo.toml
-                ./Cargo.lock
-                (craneLib.fileset.commonCargoSources ./src/ogygia-irisd)
-                (craneLib.fileset.commonCargoSources ./src/ogygia-nixutils)
-              ];
-            };
-
-            # ogygia's default `irisd` and `updated` features depend on the
-            # ogygia-nixutils and ogygia-updated path crates, so their sources
-            # must be present when building it.
-            ogygiaSrc = lib.fileset.toSource {
-              root = ./.;
-              fileset = lib.fileset.unions [
-                ./Cargo.toml
-                ./Cargo.lock
-                (craneLib.fileset.commonCargoSources ./src/ogygia)
-                (craneLib.fileset.commonCargoSources ./src/ogygia-nixutils)
-                (craneLib.fileset.commonCargoSources ./src/ogygia-updated)
-              ];
-            };
 
             commonArgs = {
               inherit src;
@@ -193,7 +157,11 @@
             ogygia = craneLib.buildPackage (individualCrateArgs // {
               pname = "ogygia";
               cargoExtraArgs = "-p ogygia";
-              src = ogygiaSrc;
+              # ogygia's default `irisd` and `updated` features depend on the
+              # ogygia-nixutils and ogygia-updated path crates.
+              src = fileSetForCrates {
+                crates = [ ./src/ogygia ./src/ogygia-nixutils ./src/ogygia-updated ];
+              };
               # Embed nebula-cert's store path in the binary so this derivation
               # carries a runtime dependency on nebula. Only set here, so plain
               # cargo builds (e.g. the dev shell) keep runtime PATH discovery.
@@ -221,7 +189,8 @@
             ogygia-irisd = craneLib.buildPackage (individualCrateArgs // {
               pname = "ogygia-irisd";
               cargoExtraArgs = "-p ogygia-irisd";
-              src = irisdSrc;
+              # ogygia-irisd depends on the ogygia-nixutils path crate.
+              src = fileSetForCrates { crates = [ ./src/ogygia-irisd ./src/ogygia-nixutils ]; };
             });
 
             # The Mac app's Nebula daemon, which is bundled into ogygia-macos
@@ -229,27 +198,19 @@
             ogygia-macos-nebulad = craneLib.buildPackage (individualCrateArgs // {
               pname = "ogygia-macos-nebulad";
               cargoExtraArgs = "-p ogygia-macos-nebulad";
-              src = lib.fileset.toSource {
-                root = ./.;
-                fileset = lib.fileset.unions [
-                  ./Cargo.toml
-                  ./Cargo.lock
-                  (craneLib.fileset.commonCargoSources ./src/ogygia-macos-nebulad)
-                  (craneLib.fileset.commonCargoSources ./src/ogygia-nixutils)
-                ];
-              };
+              src = fileSetForCrates { crates = [ ./src/ogygia-macos-nebulad ./src/ogygia-nixutils ]; };
             });
 
             ogygia-hostinfod = craneLib.buildPackage (individualCrateArgs // {
               pname = "ogygia-hostinfod";
               cargoExtraArgs = "-p ogygia-hostinfod";
-              src = fileSetForCrate ./src/ogygia-hostinfod;
+              src = fileSetForCrates { crates = [ ./src/ogygia-hostinfod ]; };
             });
 
             ogygia-updated = craneLib.buildPackage (individualCrateArgs // {
               pname = "ogygia-updated";
               cargoExtraArgs = "-p ogygia-updated";
-              src = fileSetForCrate ./src/ogygia-updated;
+              src = fileSetForCrates { crates = [ ./src/ogygia-updated ]; };
               postInstall = ''
                 ${pkgs.patchelf}/bin/patchelf --set-rpath "${lib.makeLibraryPath [ pkgs.openssl ]}" $out/bin/ogygia-updated
               '';
@@ -258,13 +219,16 @@
             ogygia-clevis = craneLib.buildPackage (individualCrateArgs // {
               pname = "ogygia-clevis";
               cargoExtraArgs = "-p ogygia-clevis";
-              src = fileSetForCrate ./src/ogygia-clevis;
+              src = fileSetForCrates { crates = [ ./src/ogygia-clevis ]; };
             });
 
             ogygia-dashboard = craneLib.buildPackage (individualCrateArgs // {
               pname = "ogygia-dashboard";
               cargoExtraArgs = "-p ogygia-dashboard";
-              src = dashboardSrc;
+              src = fileSetForCrates {
+                crates = [ ./src/ogygia-dashboard ];
+                extra = [ ./src/ogygia-dashboard/src/web.css ];
+              };
               postInstall = ''
                 ${pkgs.patchelf}/bin/patchelf --set-rpath "${lib.makeLibraryPath [ pkgs.openssl ]}" $out/bin/ogygia-dashboard
               '';
@@ -274,15 +238,7 @@
             ogygia-nix-eval = craneLib.buildPackage (individualCrateArgs // {
               pname = "ogygia-nix-eval";
               cargoExtraArgs = "-p ogygia-nix-eval-cli";
-              src = lib.fileset.toSource {
-                root = ./.;
-                fileset = lib.fileset.unions [
-                  ./Cargo.toml
-                  ./Cargo.lock
-                  (craneLib.fileset.commonCargoSources ./src/ogygia-nix-eval-cli)
-                  (craneLib.fileset.commonCargoSources ./src/ogygia-nix-eval)
-                ];
-              };
+              src = fileSetForCrates { crates = [ ./src/ogygia-nix-eval-cli ./src/ogygia-nix-eval ]; };
               env = {
                 OGYGIA_NIX_EVAL_DEFAULT_INCLUDE_PATH = "${nixIncludePath}";
                 OGYGIA_NIX_EVAL_NIX_VERSION = referenceNix.version;
@@ -356,13 +312,9 @@
             fuzzArgs = commonArgs // {
               # Only the crates it builds, so other members' changes leave it
               # and its dependencies alone.
-              src = lib.fileset.toSource {
-                root = ./.;
-                fileset = lib.fileset.unions [
-                  ./Cargo.toml
-                  ./Cargo.lock
-                  (craneLib.fileset.commonCargoSources ./src/ogygia-nix-eval)
-                  (craneLib.fileset.commonCargoSources ./src/ogygia-nix-eval-fuzz)
+              src = fileSetForCrates {
+                crates = [ ./src/ogygia-nix-eval ./src/ogygia-nix-eval-fuzz ];
+                extra = [
                   ./src/ogygia-nix-eval-fuzz/README.md
                 ];
               };
