@@ -1,4 +1,3 @@
-use std::fmt;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
@@ -9,6 +8,8 @@ use anyhow::Result;
 use chrono::DateTime;
 use chrono::Utc;
 use git2::Oid;
+use serde::Deserialize;
+use serde::Serialize;
 use tracing::info;
 use tracing::warn;
 
@@ -23,7 +24,8 @@ use crate::system::RealSystem;
 use crate::system::System;
 
 /// Result of one update cycle.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Outcome {
     /// The running and next-boot systems already match the branch tip.
     UpToDate,
@@ -52,52 +54,6 @@ pub enum Outcome {
     /// A scheduled cycle held the running trial in place, keeping the boot
     /// floor current without touching the running system.
     CanaryHeld { commit: String, next_boot: String },
-}
-
-impl fmt::Display for Outcome {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Outcome::UpToDate => write!(f, "system is up to date"),
-            Outcome::NotOnBranch { revision } => {
-                write!(
-                    f,
-                    "running revision {revision} is not on the tracked branch; not updating"
-                )
-            }
-            Outcome::Switched { commit } => write!(f, "switched to {commit}"),
-            Outcome::TestActivated { commit } => {
-                write!(f, "activated {commit} without changing the boot default")
-            }
-            Outcome::RebootScheduled { commit } => {
-                write!(f, "staged {commit} for boot and scheduled a reboot")
-            }
-            Outcome::PrefetchUnavailable { commit } => {
-                write!(
-                    f,
-                    "cache-warm closure for {commit} is unavailable; skipping until the cache catches up"
-                )
-            }
-            Outcome::CanaryStarted {
-                commit,
-                next_boot,
-                persist,
-                expires_at,
-            } => {
-                if *persist {
-                    write!(f, "trialling {commit}, staged for boot; ")?;
-                } else {
-                    write!(f, "trialling {commit}; boot floor {next_boot}; ")?;
-                }
-                match expires_at {
-                    Some(at) => write!(f, "expires {}", at.format("%Y-%m-%d %H:%MZ")),
-                    None => write!(f, "no timeout"),
-                }
-            }
-            Outcome::CanaryHeld { commit, next_boot } => {
-                write!(f, "holding canary {commit}; boot floor {next_boot}")
-            }
-        }
-    }
 }
 
 impl Outcome {

@@ -19,10 +19,12 @@ use std::time::Duration;
 
 use anyhow::Context;
 use anyhow::Result;
-use anyhow::bail;
 use serde::Deserialize;
 use serde::Serialize;
 use tracing::warn;
+
+use crate::canary::CanaryState;
+use crate::engine::Outcome;
 
 pub const DEFAULT_SOCKET_PATH: &str = "/run/ogygia-updated/control.sock";
 
@@ -54,10 +56,52 @@ pub enum Request {
     CanaryStatus,
 }
 
-/// The daemon's answer to a trigger: the result message of the cycle it
-/// ran, or the reason it could not run one. Serialized as a JSON
-/// `Result`, e.g. `{"Ok":"switched to abc"}` or `{"Err":"..."}`.
-pub type Response = Result<String, String>;
+/// The successful result of a request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "reply", rename_all = "snake_case")]
+pub enum Reply {
+    /// How the update cycle that was run ended. Whether that counts as
+    /// the caller's request being served is [`Outcome::served`].
+    Cycle { outcome: Outcome },
+    /// The current or most-recent canary, if there has been one, and the
+    /// commits the host currently runs and will next boot.
+    CanaryStatus {
+        state: Option<CanaryState>,
+        running: String,
+        next_boot: String,
+    },
+}
+
+/// Why a request failed: the error and its causes, outermost first.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Failure {
+    pub chain: Vec<String>,
+}
+
+impl Failure {
+    pub fn new(message: impl Into<String>) -> Self {
+        Failure {
+            chain: vec![message.into()],
+        }
+    }
+
+    /// Rebuild an error with the original chain of causes.
+    pub fn into_error(self) -> anyhow::Error {
+        let mut messages = self.chain.into_iter().rev();
+        let root = messages.next().unwrap_or_else(|| "unknown error".into());
+        messages.fold(anyhow::anyhow!(root), |error, message| {
+            error.context(message)
+        })
+    }
+}
+
+impl From<&anyhow::Error> for Failure {
+    fn from(error: &anyhow::Error) -> Self {
+        Failure {
+            chain: error.chain().map(ToString::to_string).collect(),
+        }
+    }
+}
 
 /// The client's side of one connection: a request the daemon has been
 /// sent, with its answer still to read.
@@ -87,18 +131,17 @@ impl Connection {
         Ok(Connection { stream })
     }
 
-    /// Wait for the daemon's result message. Errors if it reports a
-    /// failure or hangs up without answering.
-    pub fn receive(self) -> Result<String> {
+    /// Wait for the daemon's reply. Errors with its failure if it reports
+    /// one, or if it hangs up without answering.
+    pub fn receive(self) -> Result<Reply> {
         // No read timeout: a cycle legitimately takes as long as a build.
         let mut line = String::new();
         BufReader::new(&self.stream)
             .read_line(&mut line)
             .context("reading daemon response")?;
-        match serde_json::from_str::<Response>(&line).context("parsing daemon response")? {
-            Ok(message) => Ok(message),
-            Err(message) => bail!(message),
-        }
+        let result: Result<Reply, Failure> =
+            serde_json::from_str(&line).context("parsing daemon response")?;
+        result.map_err(Failure::into_error)
     }
 }
 
@@ -129,7 +172,7 @@ pub fn listen(listener: UnixListener, requests: mpsc::Sender<(Request, UnixStrea
             continue;
         }
         let Ok(request) = serde_json::from_str::<Request>(&line) else {
-            respond(&mut stream, Err("invalid request".to_string()));
+            respond(&mut stream, Err(Failure::new("invalid request")));
             continue;
         };
 
@@ -141,7 +184,7 @@ pub fn listen(listener: UnixListener, requests: mpsc::Sender<(Request, UnixStrea
 
 /// Answer a trigger connection. Failures only lose the reply, never the
 /// update cycle, so they are logged and swallowed.
-pub fn respond(stream: &mut UnixStream, response: Response) {
+pub fn respond(stream: &mut UnixStream, response: Result<Reply, Failure>) {
     let mut payload = match serde_json::to_vec(&response) {
         Ok(payload) => payload,
         Err(error) => {
@@ -163,7 +206,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn requests_round_trip_with_their_parsed_command() {
+    fn requests_round_trip_with_their_replies() {
         let dir = tempfile::TempDir::new().unwrap();
         let socket_path = dir.path().join("control.sock");
         let listener = bind(&socket_path).unwrap();
@@ -173,7 +216,14 @@ mod tests {
         let server = thread::spawn(move || {
             let (request, mut stream) = receiver.recv().unwrap();
             assert_eq!(request, Request::Update);
-            respond(&mut stream, Ok("switched to abc".to_string()));
+            respond(
+                &mut stream,
+                Ok(Reply::Cycle {
+                    outcome: Outcome::Switched {
+                        commit: "abc".to_string(),
+                    },
+                }),
+            );
 
             let (request, mut stream) = receiver.recv().unwrap();
             assert_eq!(
@@ -184,28 +234,64 @@ mod tests {
                     persist: true,
                 }
             );
-            respond(&mut stream, Err("no such branch".to_string()));
+            respond(
+                &mut stream,
+                Err(Failure {
+                    chain: vec!["starting canary".to_string(), "no such branch".to_string()],
+                }),
+            );
 
             let (request, mut stream) = receiver.recv().unwrap();
             assert_eq!(request, Request::CanaryStatus);
-            respond(&mut stream, Ok("no canary".to_string()));
+            respond(
+                &mut stream,
+                Ok(Reply::CanaryStatus {
+                    state: None,
+                    running: "abc".to_string(),
+                    next_boot: "abc".to_string(),
+                }),
+            );
 
             let (request, mut stream) = receiver.recv().unwrap();
             assert_eq!(request, Request::Tick);
-            respond(&mut stream, Ok("holding canary def".to_string()));
+            respond(
+                &mut stream,
+                Ok(Reply::Cycle {
+                    outcome: Outcome::CanaryHeld {
+                        commit: "def".to_string(),
+                        next_boot: "abc".to_string(),
+                    },
+                }),
+            );
         });
 
         let ask = |request| Connection::send(&socket_path, &request)?.receive();
-        assert_eq!(ask(Request::Update).unwrap(), "switched to abc");
+        assert_eq!(
+            ask(Request::Update).unwrap(),
+            Reply::Cycle {
+                outcome: Outcome::Switched {
+                    commit: "abc".to_string()
+                }
+            }
+        );
         let error = ask(Request::Canary {
             branch: "feature".to_string(),
             timeout: Some(3600),
             persist: true,
         })
         .unwrap_err();
-        assert_eq!(error.to_string(), "no such branch");
-        assert_eq!(ask(Request::CanaryStatus).unwrap(), "no canary");
-        assert_eq!(ask(Request::Tick).unwrap(), "holding canary def");
+        // The chain of causes survives the socket.
+        assert_eq!(format!("{error:#}"), "starting canary: no such branch");
+        assert!(matches!(
+            ask(Request::CanaryStatus).unwrap(),
+            Reply::CanaryStatus { state: None, .. }
+        ));
+        assert!(matches!(
+            ask(Request::Tick).unwrap(),
+            Reply::Cycle {
+                outcome: Outcome::CanaryHeld { .. }
+            }
+        ));
         server.join().unwrap();
     }
 
@@ -239,7 +325,7 @@ mod tests {
         stream.write_all(b"not json\n").unwrap();
         let mut line = String::new();
         BufReader::new(&stream).read_line(&mut line).unwrap();
-        let response: Response = serde_json::from_str(&line).unwrap();
+        let response: Result<Reply, Failure> = serde_json::from_str(&line).unwrap();
         assert!(response.is_err());
 
         // The garbage request never reached the update loop.

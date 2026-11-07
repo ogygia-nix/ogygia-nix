@@ -7,14 +7,18 @@ use std::time::Duration;
 
 use anyhow::Context;
 use anyhow::Result;
+use anyhow::bail;
+use chrono::Utc;
 use clap::Args;
 use clap::Subcommand;
 use clap_complete::engine::ArgValueCompleter;
 use clap_complete::engine::CompletionCandidate;
 use ogygia_updated::control::Connection;
+use ogygia_updated::control::Reply;
 use ogygia_updated::control::Request;
 
 mod privileges;
+mod render;
 
 /// Environment override for the daemon configuration the branch completer
 /// reads, mirroring `OGYGIA_CONFIG` for the CLI's own config.
@@ -116,7 +120,15 @@ impl UpdateArgs {
         let connection = Connection::send(&self.socket, &request)?;
         privileges::drop_root()?;
 
-        println!("{}", connection.receive()?);
+        let reply = connection.receive()?;
+        println!("{}", render::reply(&reply, Utc::now()));
+        // A cycle that wanted to advance and could not has not served the
+        // request, so a caller gating on being current sees a failure.
+        if let Reply::Cycle { outcome } = &reply
+            && !outcome.served()
+        {
+            bail!(render::outcome(outcome));
+        }
         Ok(())
     }
 }

@@ -14,6 +14,8 @@ use ogygia_updated::Config;
 use ogygia_updated::Outcome;
 use ogygia_updated::Trigger;
 use ogygia_updated::control;
+use ogygia_updated::control::Failure;
+use ogygia_updated::control::Reply;
 use ogygia_updated::control::Request;
 use rand::RngExt;
 use tracing::error;
@@ -68,8 +70,10 @@ fn main() -> Result<()> {
                 // A status query is answered from persisted state, without
                 // running a cycle.
                 Request::CanaryStatus => {
-                    let response = canary_status(&config).map_err(|error| format!("{error:#}"));
-                    control::respond(&mut stream, response);
+                    control::respond(
+                        &mut stream,
+                        canary_status(&config).map_err(|error| Failure::from(&error)),
+                    );
                     wait = wait_duration(&config, interval(&config));
                     continue;
                 }
@@ -105,27 +109,23 @@ fn main() -> Result<()> {
         };
 
         let result = ogygia_updated::run_once(&config, trigger);
-        let response = match &result {
-            Ok(outcome) => {
-                info!(%outcome, "update cycle finished");
-                // A cycle that could not advance is reported as a failure to
-                // whoever asked for one, so a caller gating on being current
-                // can tell it did not happen. The daemon's own interval gets
-                // no response and simply retries on the next cycle.
-                if outcome.served() {
-                    Ok(outcome.to_string())
-                } else {
-                    Err(outcome.to_string())
-                }
-            }
-            Err(error) => {
-                let message = format!("{error:#}");
-                error!(message, "update cycle failed");
-                Err(message)
-            }
-        };
+        match &result {
+            Ok(outcome) => info!(?outcome, "update cycle finished"),
+            Err(error) => error!(message = format!("{error:#}"), "update cycle failed"),
+        }
+        // Whether a cycle that could not advance counts as a failure is the
+        // client's call (`Outcome::served`); the daemon's own interval has
+        // no client and simply retries on the next cycle.
         if let Some(mut stream) = reply {
-            control::respond(&mut stream, response);
+            control::respond(
+                &mut stream,
+                match &result {
+                    Ok(outcome) => Ok(Reply::Cycle {
+                        outcome: outcome.clone(),
+                    }),
+                    Err(error) => Err(Failure::from(error)),
+                },
+            );
         }
 
         // Activating a configuration may have replaced this unit's
@@ -167,16 +167,13 @@ fn wait_duration(config: &Config, base: Duration) -> Duration {
     }
 }
 
-/// Render the current or most-recent canary for `canary status`.
-fn canary_status(config: &Config) -> Result<String> {
-    match CanaryState::load(&config.canary_state_path())? {
-        None => Ok("no canary".to_string()),
-        Some(state) => {
-            let running = read_revision(&config.host.current_revision_path);
-            let next_boot = read_revision(&config.next_boot_revision_path());
-            Ok(state.describe(Utc::now(), &running, &next_boot))
-        }
-    }
+/// The current or most-recent canary, for `canary status`.
+fn canary_status(config: &Config) -> Result<Reply> {
+    Ok(Reply::CanaryStatus {
+        state: CanaryState::load(&config.canary_state_path())?,
+        running: read_revision(&config.host.current_revision_path),
+        next_boot: read_revision(&config.next_boot_revision_path()),
+    })
 }
 
 /// Best-effort read of a build-revision file for display.
