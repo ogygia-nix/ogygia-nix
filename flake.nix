@@ -478,11 +478,11 @@
               };
 
               # Compare ogygia-nix-eval against the pinned Nix on every case in
-              # src/ogygia-nix-eval/tests/cases, including the nixpkgs lib suites,
-              # and run the differential fuzzer's tests against it.
+              # src/ogygia-nix-eval/tests/cases, including the nixpkgs lib suites.
+              # The crates' other tests run from the nextest archive.
               ogygia-nix-eval-equiv = craneLib.cargoTest (commonArgs // {
                 inherit cargoArtifacts;
-                cargoTestExtraArgs = "-p ogygia-nix-eval -p ogygia-nix-eval-fuzz";
+                cargoTestExtraArgs = "--test equiv";
                 env.OGYGIA_NIX_INSTANTIATE_BIN = "${referenceNix}/bin/nix-instantiate";
                 env.OGYGIA_NIX_EVAL_DEFAULT_INCLUDE_PATH = "${nixIncludePath}";
                 env.OGYGIA_NIX_EVAL_NIX_VERSION = referenceNix.version;
