@@ -1,0 +1,30 @@
+#~flake path:@dir(root)#.
+#~lock
+#~tree root path
+#~file flake.nix
+{
+  inputs = {
+    sub.url = "path:./sub";
+    dep.url = "path:@dir(dep)";
+    nf = { url = "path:@dir(nf)"; flake = false; };
+    gd.url = "git+file://@dir(gd)";
+    gr.url = "git+file://@dir(gd)?ref=main";
+    dep.inputs.x.follows = "nf";
+  };
+  outputs = inputs@{ self, ... }: {
+    i = builtins.mapAttrs (n: v: removeAttrs v [ "outputs" ]) (removeAttrs inputs [ "self" ]);
+  };
+}
+#~file sub/flake.nix
+{ outputs = { self }: { v = "sub"; }; }
+#~tree dep path
+#~file flake.nix
+{ inputs.x.url = "path:../nf"; inputs.x.flake = false; inputs.g.url = "git+file://@dir(gd)"; outputs = { self, x, g }: { xs = x; g = removeAttrs g [ "outputs" ]; }; }
+#~tree nf path
+#~file readme
+not a flake
+#~tree gd git
+#~file flake.nix
+{ outputs = { self }: { v = "gd"; }; }
+#~file x staged
+y

@@ -2,9 +2,11 @@
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::collections::HashSet;
 
 use crate::eval::Eval;
 use crate::flake::file::InputSpec;
+use crate::flake::flakeref;
 use crate::flake::flakeref::Attr;
 use crate::flake::flakeref::Attrs;
 use crate::value::EvalError;
@@ -39,16 +41,9 @@ pub struct Lock {
 impl Lock {
     /// The lock file of a flake with no inputs and no lock file.
     pub fn empty() -> Lock {
-        let root = Node {
-            inputs: BTreeMap::new(),
-            locked: None,
-            original: None,
-            flake: true,
-            parent: None,
-        };
         Lock {
             root: "root".to_owned(),
-            nodes: HashMap::from([("root".to_owned(), root)]),
+            nodes: HashMap::from([("root".to_owned(), root_node(BTreeMap::new()))]),
         }
     }
 
@@ -112,6 +107,49 @@ impl Lock {
                         None => false,
                     })
         })
+    }
+
+    /// Whether some input is not locked to a fixed source, as a local Git
+    /// repository's dirty working tree is not, so that Nix would not write
+    /// this as a lock file.
+    pub fn has_unlocked(&self) -> bool {
+        self.nodes.values().any(|n| {
+            n.locked.as_ref().is_some_and(|l| {
+                flakeref::get_str(l, "type") == Some("git") && !l.contains_key("rev")
+            })
+        })
+    }
+
+    /// Fails as Nix does reading a lock file if an input has neither a NAR
+    /// hash nor a revision fixing its source and is not a path relative to
+    /// another.
+    pub fn check_locked(&self) -> Result<(), Box<EvalError<'static>>> {
+        let mut seen = HashSet::new();
+        let mut pending = vec![self.root.as_str()];
+        while let Some(key) = pending.pop() {
+            if !seen.insert(key) {
+                continue;
+            }
+            let (_, node) = self.node(key)?;
+            if let Some(l) = &node.locked {
+                let ty = flakeref::get_str(l, "type");
+                let rev = l.contains_key("rev")
+                    && matches!(ty, Some("git" | "github" | "gitlab" | "sourcehut"));
+                let relative = ty == Some("path")
+                    && flakeref::get_str(l, "path").is_some_and(|p| !p.starts_with('/'));
+                if !(l.contains_key("narHash") || rev || relative) {
+                    return eval_err(format!(
+                        "Lock file contains unlocked input '{}'. Use '--allow-dirty-locks' to accept this lock file.",
+                        flakeref::to_string(l)
+                    ));
+                }
+            }
+            pending.extend(node.inputs.values().filter_map(|e| match e {
+                Edge::Node(k) => Some(k.as_str()),
+                Edge::Follows(_) => None,
+            }));
+        }
+        Ok(())
     }
 
     fn locks_input(&self, spec: &InputSpec, edge: &Edge) -> bool {
@@ -181,43 +219,76 @@ pub fn from_value<'a>(ev: &Eval<'a>, v: Value<'a>) -> R<'a, Lock> {
     let Some(nodes_v) = get(ev, top, "nodes") else {
         return eval_err("lock file has no nodes");
     };
+    let nodes_v = ev.force_attrs(nodes_v)?;
+    // Nix reads only the nodes reachable from the root, and of the root
+    // only its inputs, ignoring a root that is not an object.
     let mut nodes = HashMap::new();
-    for e in ev.force_attrs(nodes_v)?.entries {
-        let n = ev.force_attrs(e.value)?;
-        let mut inputs = BTreeMap::new();
-        if let Some(i) = get(ev, n, "inputs") {
-            for input in ev.force_attrs(i)?.entries {
-                let edge = match ev.force(input.value)? {
-                    Value::List(_) => Edge::Follows(path(ev, input.value)?),
-                    _ => Edge::Node(string(ev, input.value)?),
-                };
-                inputs.insert(ev.name(input.name).to_owned(), edge);
-            }
+    let mut pending = vec![root.clone()];
+    while let Some(key) = pending.pop() {
+        if nodes.contains_key(&key) {
+            continue;
         }
-        let locked = get(ev, n, "locked")
-            .map(|v| attrs_from_value(ev, v))
-            .transpose()?;
-        let original = get(ev, n, "original")
-            .map(|v| attrs_from_value(ev, v))
-            .transpose()?;
-        let flake = match get(ev, n, "flake") {
-            Some(f) => ev.force_bool(f)?,
-            None => true,
+        let Some(v) = get(ev, nodes_v, &key) else {
+            return eval_err(format!("lock file references missing node '{key}'"));
         };
-        let parent = get(ev, n, "parent").map(|p| path(ev, p)).transpose()?;
-        nodes.insert(
-            ev.name(e.name).to_owned(),
-            Node {
-                inputs,
-                locked,
-                original,
-                flake,
-                parent,
-            },
-        );
-    }
-    if !nodes.contains_key(&root) {
-        return eval_err(format!("lock file references missing node '{root}'"));
+        let node = if key == root {
+            match ev.force(v)? {
+                Value::Attrs(n) => root_node(inputs(ev, n)?),
+                _ => root_node(BTreeMap::new()),
+            }
+        } else {
+            node(ev, ev.force_attrs(v)?)?
+        };
+        pending.extend(node.inputs.values().filter_map(|e| match e {
+            Edge::Node(k) => Some(k.clone()),
+            Edge::Follows(_) => None,
+        }));
+        nodes.insert(key, node);
     }
     Ok(Lock { root, nodes })
+}
+
+fn root_node(inputs: BTreeMap<String, Edge>) -> Node {
+    Node {
+        inputs,
+        locked: None,
+        original: None,
+        flake: true,
+        parent: None,
+    }
+}
+
+fn inputs<'a>(ev: &Eval<'a>, n: &crate::value::Attrs<'a>) -> R<'a, BTreeMap<String, Edge>> {
+    let mut inputs = BTreeMap::new();
+    if let Some(i) = get(ev, n, "inputs") {
+        for input in ev.force_attrs(i)?.entries {
+            let edge = match ev.force(input.value)? {
+                Value::List(_) => Edge::Follows(path(ev, input.value)?),
+                _ => Edge::Node(string(ev, input.value)?),
+            };
+            inputs.insert(ev.name(input.name).to_owned(), edge);
+        }
+    }
+    Ok(inputs)
+}
+
+fn node<'a>(ev: &Eval<'a>, n: &crate::value::Attrs<'a>) -> R<'a, Node> {
+    let locked = get(ev, n, "locked")
+        .map(|v| attrs_from_value(ev, v))
+        .transpose()?;
+    let original = get(ev, n, "original")
+        .map(|v| attrs_from_value(ev, v))
+        .transpose()?;
+    let flake = match get(ev, n, "flake") {
+        Some(f) => ev.force_bool(f)?,
+        None => true,
+    };
+    let parent = get(ev, n, "parent").map(|p| path(ev, p)).transpose()?;
+    Ok(Node {
+        inputs: inputs(ev, n)?,
+        locked,
+        original,
+        flake,
+        parent,
+    })
 }

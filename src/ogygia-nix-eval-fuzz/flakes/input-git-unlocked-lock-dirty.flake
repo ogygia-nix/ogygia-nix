@@ -1,0 +1,25 @@
+#~flake path:@dir(root)#v
+#~tree root path
+#~file flake.nix
+{ inputs.gd.url = "git+file://@dir(gd)"; outputs = { self, gd }: { v = gd.v; }; }
+#~tree nf path
+#~file readme
+nf
+#~tree gd git
+#~file flake.nix
+{ inputs.nf = { url = "path:@dir(nf)"; flake = false; }; outputs = { self, nf }: { v = "ok"; }; }
+#~file flake.lock
+{
+  "nodes": {
+    "nf": {
+      "flake": false,
+      "locked": { "path": "@dir(nf)", "type": "path" },
+      "original": { "path": "@dir(nf)", "type": "path" }
+    },
+    "root": { "inputs": { "nf": "nf" } }
+  },
+  "root": "root",
+  "version": 7
+}
+#~file x staged
+y

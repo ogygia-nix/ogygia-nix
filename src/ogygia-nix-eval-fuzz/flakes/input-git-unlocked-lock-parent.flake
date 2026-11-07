@@ -1,0 +1,60 @@
+#~flake path:@dir(root)#v
+#~tree bs store
+#~file flake.nix
+{ inputs.c.url = "path:./c"; outputs = { self, c }: { v = c.v; }; }
+#~file c/flake.nix
+{ outputs = { self }: { v = "b"; }; }
+#~tree ds store
+#~file flake.nix
+{ outputs = { self }: { v = "lock"; }; }
+#~tree fresh path
+#~file flake.nix
+{ outputs = { self }: { v = "fresh"; }; }
+#~tree top path
+#~file flake.nix
+{ inputs.c.url = "path:./c"; outputs = { self, c }: { v = c.v; }; }
+#~file c/flake.nix
+{ outputs = { self }: { v = "top"; }; }
+#~tree root path
+#~file flake.nix
+{ inputs.gd.url = "git+file://@dir(gd)"; inputs.b.url = "path:@dir(top)"; outputs = { self, gd, b }: { v = [ gd.v b.v ]; }; }
+#~tree gd git
+#~file flake.nix
+{ inputs.b.url = "github:o/b"; inputs.e.url = "github:o/e"; outputs = { self, b, e }: { v = [ b.v e.v ]; }; }
+#~file c/flake.nix
+{ inputs.d.url = "path:@dir(fresh)"; outputs = { self, d }: { v = [ "gd" d.v ]; }; }
+#~file flake.lock
+{
+  "nodes": {
+    "b": {
+      "inputs": { "c": "c" },
+      "locked": { "lastModified": 1700000000, "narHash": "@narHash(bs)", "owner": "o", "repo": "b", "rev": "0123456789abcdef0123456789abcdef01234567", "type": "github" },
+      "original": { "owner": "o", "repo": "b", "type": "github" }
+    },
+    "c": {
+      "inputs": { "d": "d" },
+      "locked": { "path": "./c", "type": "path" },
+      "original": { "path": "./c", "type": "path" },
+      "parent": [ "b" ]
+    },
+    "d": {
+      "locked": { "lastModified": 1700000000, "narHash": "@narHash(ds)", "owner": "o", "repo": "d", "rev": "1123456789abcdef0123456789abcdef01234567", "type": "github" },
+      "original": { "path": "@dir(fresh)", "type": "path" }
+    },
+    "e": {
+      "inputs": { "c": "ec" },
+      "locked": { "lastModified": 1700000000, "narHash": "@narHash(bs)", "owner": "o", "repo": "e", "rev": "2123456789abcdef0123456789abcdef01234567", "type": "github" },
+      "original": { "owner": "o", "repo": "e", "type": "github" }
+    },
+    "ec": {
+      "locked": { "path": "./c", "type": "path" },
+      "original": { "path": "./c", "type": "path" },
+      "parent": [ "gd", "e" ]
+    },
+    "root": { "inputs": { "b": "b", "e": "e" } }
+  },
+  "root": "root",
+  "version": 7
+}
+#~file x staged
+y

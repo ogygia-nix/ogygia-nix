@@ -5,6 +5,7 @@ mod file;
 mod flakeref;
 mod lock;
 pub(crate) mod source;
+mod update;
 
 use std::cell::OnceCell;
 use std::cell::RefCell;
@@ -187,6 +188,17 @@ impl<'a> Flakes<'a> {
         entries.push(ev.entry("outPath", store_string(ev, &located.dir, &located.source)));
         Ok(ev.attrs(entries))
     }
+}
+
+/// The lock file of the flake in `dir`, empty if it has none.
+fn read_lock<'a>(ev: &Eval<'a>, dir: &str) -> R<'a, Lock> {
+    let lock_file = format!("{dir}/flake.lock");
+    if !r(ev.ctx.io.exists(&lock_file))? {
+        return Ok(Lock::empty());
+    }
+    let text = r(ev.ctx.io.read(&lock_file))?;
+    let json = crate::builtins::json::from_json(ev, ev.str_val(&text, &[]))?;
+    lock::from_value(ev, json)
 }
 
 /// The directory of the flake `attrs` refers to, in `base`, the directory
@@ -374,19 +386,23 @@ pub(crate) fn eval_json<'a>(
     let source = r(source::fetch(&ev.ctx.io, env, &attrs, &shown))?;
     let dir = flake_dir(&source.path, &attrs);
     let loaded = file::load(ev, &dir, &shown)?;
-    let lock_file = format!("{dir}/flake.lock");
-    let lock = if r(ev.ctx.io.exists(&lock_file))? {
-        let text = r(ev.ctx.io.read(&lock_file))?;
-        let json = crate::builtins::json::from_json(ev, ev.str_val(&text, &[]))?;
-        lock::from_value(ev, json)?
+    let lock = read_lock(ev, &dir)?;
+    lock.check_locked()?;
+    let located = Located { source, dir };
+    // Nix locks the inputs anew, and goes on without writing the lock file
+    // if that leaves some unlocked.
+    let (lock, located) = if lock.locks(&loaded.inputs) {
+        let located = HashMap::from([(lock.root.clone(), located)]);
+        (lock, located)
     } else {
-        Lock::empty()
+        let (lock, located) = update::lock(ev, env, &lock, located, &loaded.inputs)?;
+        if !lock.has_unlocked() {
+            return eval_err(format!(
+                "flake '{shown}' requires lock file changes but they're not allowed due to '--no-update-lock-file'"
+            ));
+        }
+        (lock, located)
     };
-    if !lock.locks(&loaded.inputs) {
-        return eval_err(format!(
-            "flake '{shown}' requires lock file changes but they're not allowed due to '--no-update-lock-file'"
-        ));
-    }
     let flakes = flakes.get_or_init(|| Flakes {
         env,
         lock,
@@ -395,11 +411,11 @@ pub(crate) fn eval_json<'a>(
         values: RefCell::new(HashMap::new()),
         outputs: RefCell::new(HashMap::new()),
     });
+    for (key, located) in located {
+        let (key, _) = flakes.lock.node(&key)?;
+        flakes.sources.borrow_mut().insert(key, located);
+    }
     let (root, _) = flakes.lock.node(&flakes.lock.root)?;
-    flakes
-        .sources
-        .borrow_mut()
-        .insert(root, Located { source, dir });
     let outputs = flakes.checked_outputs(ev, root);
     let system = &ev.settings.current_system;
     let candidates: Vec<Vec<String>> = match fragment {

@@ -22,11 +22,13 @@ use crate::value::anyhow_err;
 use crate::value::eval_err;
 
 /// An input as a flake's `flake.nix` declares it.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct InputSpec {
     /// Its reference; `None` for an override that leaves it as it is.
     pub attrs: Option<Attrs>,
     pub follows: Option<Vec<String>>,
+    /// Whether it is a flake, if `flake.nix` says.
+    pub flake: Option<bool>,
     /// Its own inputs, overridden.
     pub overrides: BTreeMap<String, InputSpec>,
 }
@@ -157,9 +159,10 @@ fn input_spec<'a>(ev: &Eval<'a>, name: &str, field: Field<'a>, top: bool) -> R<'
                 );
             }
             "flake" => {
-                f.expect(ev, "a Boolean", &at, |v| {
-                    matches!(v, Value::Bool(_)).then_some(())
-                })?;
+                spec.flake = Some(f.expect(ev, "a Boolean", &at, |v| match v {
+                    Value::Bool(b) => Some(b),
+                    _ => None,
+                })?);
             }
             "inputs" => {
                 for (child, c) in f.fields(ev, &at)? {

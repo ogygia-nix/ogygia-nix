@@ -1,0 +1,45 @@
+#~flake path:@dir(root)#v
+#~tree bs store
+#~file flake.nix
+{ inputs.c.url = "path:./c"; outputs = { self, c }: { v = c.v; }; }
+#~file c/flake.nix
+{ outputs = { self }: { v = "b"; }; }
+#~tree ds store
+#~file flake.nix
+{ outputs = { self }: { v = "lock"; }; }
+#~tree fresh path
+#~file flake.nix
+{ outputs = { self }: { v = "fresh"; }; }
+#~tree gd git
+#~file flake.nix
+{ outputs = { self }: { }; }
+#~file x staged
+y
+#~tree root path
+#~file flake.nix
+{ inputs.b.url = "github:o/b"; inputs.gd.url = "git+file://@dir(gd)"; outputs = { self, b, ... }: { v = b.v; }; }
+#~file c/flake.nix
+{ inputs.d.url = "path:@dir(fresh)"; outputs = { self, d }: { v = [ "root" d.v ]; }; }
+#~file flake.lock
+{
+  "nodes": {
+    "b": {
+      "inputs": { "c": "c" },
+      "locked": { "lastModified": 1700000000, "narHash": "@narHash(bs)", "owner": "o", "repo": "b", "rev": "0123456789abcdef0123456789abcdef01234567", "type": "github" },
+      "original": { "owner": "o", "repo": "b", "type": "github" }
+    },
+    "c": {
+      "inputs": { "d": "d" },
+      "locked": { "path": "./c", "type": "path" },
+      "original": { "path": "./c", "type": "path" },
+      "parent": [ "x" ]
+    },
+    "d": {
+      "locked": { "lastModified": 1700000000, "narHash": "@narHash(ds)", "owner": "o", "repo": "d", "rev": "1123456789abcdef0123456789abcdef01234567", "type": "github" },
+      "original": { "path": "@dir(fresh)", "type": "path" }
+    },
+    "root": { "inputs": { "b": "b" } }
+  },
+  "root": "root",
+  "version": 7
+}

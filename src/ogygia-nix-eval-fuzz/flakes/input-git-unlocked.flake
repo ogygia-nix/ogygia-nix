@@ -1,0 +1,11 @@
+#~flake path:@dir(root)#.
+#~lock
+#~tree root path
+#~file flake.nix
+{
+  inputs.gd.url = "git+file://@dir(gd)";
+  outputs = inputs@{ self, ... }: { v = inputs.gd.v; };
+}
+#~tree gd git
+#~file flake.nix staged
+{ outputs = { self }: { v = "gd"; }; }
