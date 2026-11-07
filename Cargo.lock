@@ -2941,7 +2941,7 @@ version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f1c46f3fcd2e888afdb01a07efc071cb21300e07c68d32c3e8b01b5c8cb1fcaa"
 dependencies = [
- "sha2 0.11.1",
+ "sha2",
 ]
 
 [[package]]
@@ -3223,7 +3223,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2",
  "tempfile",
  "tokio",
  "tracing",
@@ -3295,7 +3295,7 @@ dependencies = [
  "rand 0.10.3",
  "reqwest",
  "serde",
- "sha2 0.10.9",
+ "sha2",
  "siphasher",
  "strum",
  "tempfile",
@@ -3350,7 +3350,7 @@ dependencies = [
  "rnix",
  "rowan",
  "sha1",
- "sha2 0.10.9",
+ "sha2",
  "strum",
  "tar",
  "tempfile",
@@ -3384,7 +3384,7 @@ dependencies = [
  "libfuzzer-sys",
  "ogygia-nix-eval",
  "rnix",
- "sha2 0.10.9",
+ "sha2",
  "strum",
  "tempfile",
 ]
@@ -4377,17 +4377,6 @@ name = "sha1dc"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c5b0ebf6537e3e8db8bb7d21ecb6d7399738c953c757945c6b95e46c4e95df7b"
-
-[[package]]
-name = "sha2"
-version = "0.10.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a7507d819769d01a365ab707794a4084392c824f54a7a6a7862f8c3d0892b283"
-dependencies = [
- "cfg-if",
- "cpufeatures 0.2.17",
- "digest 0.10.7",
-]
 
 [[package]]
 name = "sha2"
