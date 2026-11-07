@@ -98,7 +98,8 @@ fn flake_command(store: &Store, cache: &Path, cwd: &Path) -> std::process::Comma
     cmd
 }
 
-/// Write `bundle`'s trees under `work`, adding its store trees to `store`.
+/// Write `bundle`'s trees under `work`, store trees first, adding those to
+/// `store`.
 /// Fails with a deliberate divergence if they cannot be written, or as
 /// [`run_command`] does if Nix cannot finish.
 fn materialise(
@@ -119,7 +120,9 @@ fn materialise(
         ));
     }
     std::fs::create_dir_all(&trees.ours_store).expect("create store directory");
-    for tree in &bundle.trees {
+    let (stored, others): (Vec<_>, Vec<_>) =
+        bundle.trees.iter().partition(|t| t.kind == Kind::Store);
+    for tree in stored.into_iter().chain(others) {
         let dir = work.join(tree.name);
         std::fs::create_dir_all(&dir).expect("create tree directory");
         let written = match tree.kind {

@@ -78,8 +78,9 @@ not committed
   after it and not added: untracked, or a modification).
 - `#~lock` locks the flake with `nix flake lock` first.
 - `@dir(NAME)` in the reference or any file is the absolute path of tree
-  `NAME`, and `@narHash(NAME)` the NAR hash of a store tree declared before,
-  so that a lock file can name an input in the store.
+  `NAME`, and `@narHash(NAME)` the NAR hash of store tree `NAME`, so that a
+  lock file can name an input in the store. Store trees are written first,
+  so in a store tree it stands only for a store tree declared before.
 
 The trees are written out with every modification and commit time fixed,
 and each check has a store and Nix caches of its own, so nothing depends on
@@ -112,8 +113,15 @@ attribute Nix treats specially (`__functor`, `__overrides`,
 `type = "derivation"` and the like) or toggle its `rec`, or replace a
 number, string or path with an edge case (the largest integer, negative
 zero, an escape, indentation, a path to normalise), within one of
-the Nix files of a flake bundle. Those make meaningful Nix likelier but
-never make any input unreachable.
+the Nix files of a flake bundle. Half the time a flake bundle's structure
+changes instead: a tree is added along with an input of the flake to
+provide it, a tree changes kind, `#~lock` or a file's flag is toggled, the
+reference is replaced with another (a scheme, a tree, parameters such as
+`?dir=` and `?narHash=`, an attribute path with quoted or percent-encoded
+names), the lock file with one whose nodes are of any type and may
+follow others, or the flake gains a binding such as `inputs.x.follows` or
+`nixConfig`, or outputs reading `self.rev` and the like. Those make
+meaningful Nix likelier but never make any input unreachable.
 
 The Nix package ships seed inputs to start from (the equivalence cases,
 nixpkgs' `lib`, rnix's parser tests, and the flake bundles in `flakes`)
