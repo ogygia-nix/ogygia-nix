@@ -9,6 +9,7 @@ use std::fs;
 use std::io::BufRead;
 use std::io::BufReader;
 use std::io::Write;
+use std::net::Shutdown;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixListener;
 use std::os::unix::net::UnixStream;
@@ -58,64 +59,46 @@ pub enum Request {
 /// `Result`, e.g. `{"Ok":"switched to abc"}` or `{"Err":"..."}`.
 pub type Response = Result<String, String>;
 
-/// Reset the host to the tracked branch tip now, clearing any canary.
-pub fn request_update(socket_path: &Path) -> Result<String> {
-    send(socket_path, &Request::Update)
+/// The client's side of one connection: a request the daemon has been
+/// sent, with its answer still to read.
+pub struct Connection {
+    stream: UnixStream,
 }
 
-/// Run one cycle now as the daemon's interval would, returning once it has
-/// finished. Errors if the cycle failed, so a caller gating on being
-/// current can tell a served tick from a missed one.
-pub fn request_tick(socket_path: &Path) -> Result<String> {
-    send(socket_path, &Request::Tick)
-}
+impl Connection {
+    /// Send `request` to the daemon listening on `socket_path`. The
+    /// connection is closed for writing afterwards, so holding it lets
+    /// nothing further reach the daemon. Errors if the daemon cannot be
+    /// reached.
+    pub fn send(socket_path: &Path, request: &Request) -> Result<Self> {
+        let mut stream = UnixStream::connect(socket_path).with_context(|| {
+            format!(
+                "connecting to {}; is ogygia-updated running, and are you root?",
+                socket_path.display()
+            )
+        })?;
 
-/// Start a canary trialling `branch`, held for `timeout` seconds (no
-/// timeout if `None`). `persist` keeps the trial across a reboot.
-pub fn request_canary(
-    socket_path: &Path,
-    branch: String,
-    timeout: Option<u64>,
-    persist: bool,
-) -> Result<String> {
-    send(
-        socket_path,
-        &Request::Canary {
-            branch,
-            timeout,
-            persist,
-        },
-    )
-}
+        let mut payload = serde_json::to_vec(request)?;
+        payload.push(b'\n');
+        stream.write_all(&payload).context("sending request")?;
+        stream
+            .shutdown(Shutdown::Write)
+            .context("closing the request")?;
+        Ok(Connection { stream })
+    }
 
-/// Ask the daemon to describe the current or most-recent canary.
-pub fn request_canary_status(socket_path: &Path) -> Result<String> {
-    send(socket_path, &Request::CanaryStatus)
-}
-
-/// Send `request` to the daemon listening on `socket_path` and return its
-/// result message. Errors if the daemon cannot be reached or reports a
-/// failure.
-fn send(socket_path: &Path, request: &Request) -> Result<String> {
-    let mut stream = UnixStream::connect(socket_path).with_context(|| {
-        format!(
-            "connecting to {}; is ogygia-updated running, and are you root?",
-            socket_path.display()
-        )
-    })?;
-
-    let mut payload = serde_json::to_vec(request)?;
-    payload.push(b'\n');
-    stream.write_all(&payload).context("sending request")?;
-
-    // No read timeout: a cycle legitimately takes as long as a build.
-    let mut line = String::new();
-    BufReader::new(&stream)
-        .read_line(&mut line)
-        .context("reading daemon response")?;
-    match serde_json::from_str::<Response>(&line).context("parsing daemon response")? {
-        Ok(message) => Ok(message),
-        Err(message) => bail!(message),
+    /// Wait for the daemon's result message. Errors if it reports a
+    /// failure or hangs up without answering.
+    pub fn receive(self) -> Result<String> {
+        // No read timeout: a cycle legitimately takes as long as a build.
+        let mut line = String::new();
+        BufReader::new(&self.stream)
+            .read_line(&mut line)
+            .context("reading daemon response")?;
+        match serde_json::from_str::<Response>(&line).context("parsing daemon response")? {
+            Ok(message) => Ok(message),
+            Err(message) => bail!(message),
+        }
     }
 }
 
@@ -174,6 +157,7 @@ pub fn respond(stream: &mut UnixStream, response: Response) {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Read;
     use std::thread;
 
     use super::*;
@@ -211,13 +195,32 @@ mod tests {
             respond(&mut stream, Ok("holding canary def".to_string()));
         });
 
-        assert_eq!(request_update(&socket_path).unwrap(), "switched to abc");
-        let error =
-            request_canary(&socket_path, "feature".to_string(), Some(3600), true).unwrap_err();
+        let ask = |request| Connection::send(&socket_path, &request)?.receive();
+        assert_eq!(ask(Request::Update).unwrap(), "switched to abc");
+        let error = ask(Request::Canary {
+            branch: "feature".to_string(),
+            timeout: Some(3600),
+            persist: true,
+        })
+        .unwrap_err();
         assert_eq!(error.to_string(), "no such branch");
-        assert_eq!(request_canary_status(&socket_path).unwrap(), "no canary");
-        assert_eq!(request_tick(&socket_path).unwrap(), "holding canary def");
+        assert_eq!(ask(Request::CanaryStatus).unwrap(), "no canary");
+        assert_eq!(ask(Request::Tick).unwrap(), "holding canary def");
         server.join().unwrap();
+    }
+
+    #[test]
+    fn a_sent_request_is_all_the_daemon_can_read() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let socket_path = dir.path().join("control.sock");
+        let listener = UnixListener::bind(&socket_path).unwrap();
+
+        let connection = Connection::send(&socket_path, &Request::Tick).unwrap();
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut received = String::new();
+        stream.read_to_string(&mut received).unwrap();
+        assert_eq!(received, "{\"command\":\"tick\"}\n");
+        drop(connection);
     }
 
     #[test]
