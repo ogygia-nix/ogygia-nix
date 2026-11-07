@@ -17,6 +17,9 @@ use ogygia_updated::control::Connection;
 use ogygia_updated::control::Reply;
 use ogygia_updated::control::Request;
 
+use self::render::Format;
+use self::render::Renderer;
+
 mod privileges;
 mod render;
 
@@ -31,6 +34,11 @@ pub struct UpdateArgs {
     /// Control socket of the ogygia-updated daemon
     #[arg(long, default_value = ogygia_updated::control::DEFAULT_SOCKET_PATH)]
     socket: PathBuf,
+
+    /// How to show progress: plain lines, or json to print the daemon's
+    /// frames
+    #[arg(long, value_enum, default_value = "plain", global = true)]
+    format: Format,
 
     #[command(subcommand)]
     command: Option<UpdateCommand>,
@@ -116,12 +124,18 @@ impl UpdateArgs {
         };
 
         // Root is needed only to reach the socket. Nothing after this,
-        // from reading the daemon's answer onwards, keeps it.
+        // from reading the daemon's frames onwards, keeps it.
         let connection = Connection::send(&self.socket, &request)?;
         privileges::drop_root()?;
 
-        let reply = connection.receive()?;
-        println!("{}", render::reply(&reply, Utc::now()));
+        let mut renderer = Renderer::new(self.format);
+        let reply = connection.receive(|frame| renderer.frame(frame))?;
+
+        // With --format json stdout carries only the frames, which already
+        // include the reply.
+        if self.format != Format::Json {
+            println!("{}", render::reply(&reply, Utc::now()));
+        }
         // A cycle that wanted to advance and could not has not served the
         // request, so a caller gating on being current sees a failure.
         if let Reply::Cycle { outcome } = &reply

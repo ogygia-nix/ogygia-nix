@@ -18,6 +18,8 @@ use crate::canary::CanaryState;
 use crate::canary::CanaryTarget;
 use crate::canary::FinishReason;
 use crate::config::Config;
+use crate::control::Events;
+use crate::control::Step;
 use crate::repo::Repo;
 use crate::system::Activation;
 use crate::system::RealSystem;
@@ -102,9 +104,10 @@ pub enum Trigger {
     },
 }
 
-/// Run one update cycle.
-pub fn run_once(config: &Config, trigger: Trigger) -> Result<Outcome> {
-    run(config, &RealSystem, Utc::now(), &read_boot_id()?, trigger)
+/// Run one update cycle, reporting its progress to `events`.
+pub fn run_once(config: &Config, trigger: Trigger, events: &Events) -> Result<Outcome> {
+    let system = RealSystem { events };
+    run(config, &system, Utc::now(), &read_boot_id()?, trigger)
 }
 
 fn run(
@@ -114,6 +117,7 @@ fn run(
     boot_id: &str,
     trigger: Trigger,
 ) -> Result<Outcome> {
+    system.step(Step::Fetch);
     let repo = Repo::open_or_clone(&config.repo_path(), &config.repo.url)?;
     repo.fetch()?;
     let main_tip = repo.tip(&config.repo.branch)?;
@@ -541,9 +545,15 @@ mod tests {
         /// tracked branch. Set to `Some(false)` to model a freshly-added
         /// host.
         attr_defined: Option<bool>,
+        /// Phases the engine announced, in order.
+        steps: RefCell<Vec<Step>>,
     }
 
     impl System for MockSystem {
+        fn step(&self, step: Step) {
+            self.steps.borrow_mut().push(step);
+        }
+
         fn prefetch(&self, flake_ref: &str) -> Result<()> {
             self.calls
                 .borrow_mut()
@@ -677,6 +687,18 @@ mod tests {
 
         assert_eq!(outcome, Outcome::UpToDate);
         assert!(system.calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn the_cycle_announces_fetching_first() {
+        let (fixture, _origin, initial) = Fixture::new();
+        fixture.set_current(initial);
+        fixture.set_next_boot(initial);
+
+        let system = MockSystem::default();
+        run(&fixture.config, &system, now(), BOOT, Trigger::Scheduled).unwrap();
+
+        assert_eq!(*system.steps.borrow(), vec![Step::Fetch]);
     }
 
     #[test]

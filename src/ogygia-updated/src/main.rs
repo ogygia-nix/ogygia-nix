@@ -14,6 +14,7 @@ use ogygia_updated::Config;
 use ogygia_updated::Outcome;
 use ogygia_updated::Trigger;
 use ogygia_updated::control;
+use ogygia_updated::control::Events;
 use ogygia_updated::control::Failure;
 use ogygia_updated::control::Reply;
 use ogygia_updated::control::Request;
@@ -64,26 +65,23 @@ fn main() -> Result<()> {
             Err(RecvTimeoutError::Disconnected) => bail!("control socket listener exited"),
         };
 
-        let (trigger, reply) = match received {
-            None => (Trigger::Scheduled, None),
-            Some((request, mut stream)) => match request {
+        let (trigger, events) = match received {
+            None => (Trigger::Scheduled, Events::none()),
+            Some((request, events)) => match request {
                 // A status query is answered from persisted state, without
                 // running a cycle.
                 Request::CanaryStatus => {
-                    control::respond(
-                        &mut stream,
-                        canary_status(&config).map_err(|error| Failure::from(&error)),
-                    );
+                    events.finish(canary_status(&config).map_err(|error| Failure::from(&error)));
                     wait = wait_duration(&config, interval(&config));
                     continue;
                 }
                 Request::Update => {
                     info!("manual update requested over the control socket");
-                    (Trigger::Manual, Some(stream))
+                    (Trigger::Manual, events)
                 }
                 Request::Tick => {
                     info!("tick requested over the control socket");
-                    (Trigger::Scheduled, Some(stream))
+                    (Trigger::Scheduled, events)
                 }
                 Request::Canary {
                     branch,
@@ -102,13 +100,13 @@ fn main() -> Result<()> {
                             timeout: timeout.map(Duration::from_secs),
                             persist,
                         },
-                        Some(stream),
+                        events,
                     )
                 }
             },
         };
 
-        let result = ogygia_updated::run_once(&config, trigger);
+        let result = ogygia_updated::run_once(&config, trigger, &events);
         match &result {
             Ok(outcome) => info!(?outcome, "update cycle finished"),
             Err(error) => error!(message = format!("{error:#}"), "update cycle failed"),
@@ -116,17 +114,12 @@ fn main() -> Result<()> {
         // Whether a cycle that could not advance counts as a failure is the
         // client's call (`Outcome::served`); the daemon's own interval has
         // no client and simply retries on the next cycle.
-        if let Some(mut stream) = reply {
-            control::respond(
-                &mut stream,
-                match &result {
-                    Ok(outcome) => Ok(Reply::Cycle {
-                        outcome: outcome.clone(),
-                    }),
-                    Err(error) => Err(Failure::from(error)),
-                },
-            );
-        }
+        events.finish(match &result {
+            Ok(outcome) => Ok(Reply::Cycle {
+                outcome: outcome.clone(),
+            }),
+            Err(error) => Err(Failure::from(error)),
+        });
 
         // Activating a configuration may have replaced this unit's
         // definition, which switch-to-configuration never restarts

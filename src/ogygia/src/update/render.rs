@@ -5,12 +5,103 @@
 
 use chrono::DateTime;
 use chrono::Utc;
+use clap::ValueEnum;
+use ogygia_updated::Activation;
 use ogygia_updated::CanaryHold;
 use ogygia_updated::CanaryState;
 use ogygia_updated::CanaryTarget;
 use ogygia_updated::FinishReason;
 use ogygia_updated::Outcome;
+use ogygia_updated::control::Frame;
 use ogygia_updated::control::Reply;
+use ogygia_updated::control::Step;
+use serde_json::Value;
+
+/// How to present the daemon's progress.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum Format {
+    /// One line per phase and per build message.
+    Plain,
+    /// The daemon's frames, one JSON object per line on stdout.
+    Json,
+}
+
+/// Renders frames as they arrive. Progress goes to stderr, leaving stdout
+/// for the final result (or, with [`Format::Json`], for the frames).
+pub struct Renderer {
+    format: Format,
+    warned_unknown: bool,
+}
+
+impl Renderer {
+    pub fn new(format: Format) -> Self {
+        Renderer {
+            format,
+            warned_unknown: false,
+        }
+    }
+
+    pub fn frame(&mut self, frame: &Frame) {
+        if self.format == Format::Json {
+            if let Ok(line) = serde_json::to_string(frame) {
+                println!("{line}");
+            }
+            return;
+        }
+
+        match frame {
+            Frame::Step { step } => eprintln!("==> {}", step_label(step)),
+            Frame::Nix { event } => {
+                if let Some(text) = nix_event_text(event) {
+                    eprintln!("{text}");
+                }
+            }
+            Frame::Output { line, .. } => eprintln!("{line}"),
+            Frame::Finished { .. } => {}
+            Frame::Unknown => {
+                if !std::mem::replace(&mut self.warned_unknown, true) {
+                    eprintln!("warning: ignoring a message from a newer ogygia-updated");
+                }
+            }
+        }
+    }
+}
+
+fn step_label(step: &Step) -> String {
+    match step {
+        Step::Fetch => "fetching the repository".to_string(),
+        Step::Prefetch => "substituting the cache-warm closure".to_string(),
+        Step::Build => "building the system".to_string(),
+        Step::SetProfile => "updating the system profile".to_string(),
+        Step::Activate { action } => {
+            let action = match action {
+                Activation::Test => "test",
+                Activation::Switch => "switch",
+                Activation::Boot => "boot",
+            };
+            format!("activating the new system ({action})")
+        }
+        Step::ScheduleReboot => "scheduling a reboot".to_string(),
+    }
+}
+
+/// The line, if any, a nix log event is worth in plain output: its
+/// messages, the start of each build and substitution, and build logs.
+/// Everything else is progress bookkeeping.
+fn nix_event_text(event: &Value) -> Option<String> {
+    let text = match event["action"].as_str()? {
+        // Up to "info"; anything chattier is debugging output.
+        "msg" if event["level"].as_u64()? <= 3 => &event["msg"],
+        // actBuild, actSubstitute
+        "start" if matches!(event["type"].as_u64()?, 105 | 108) => &event["text"],
+        // resBuildLogLine, resPostBuildLogLine
+        "result" if matches!(event["type"].as_u64()?, 101 | 107) => &event["fields"][0],
+        _ => return None,
+    };
+    text.as_str()
+        .filter(|text| !text.is_empty())
+        .map(str::to_owned)
+}
 
 /// What a reply says, for stdout.
 pub fn reply(reply: &Reply, now: DateTime<Utc>) -> String {
@@ -118,6 +209,8 @@ fn timestamp(at: DateTime<Utc>) -> String {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
 
     #[test]
@@ -199,6 +292,32 @@ mod tests {
                 commit: "abc".to_string()
             }),
             "switched to abc"
+        );
+    }
+
+    #[test]
+    fn plain_output_keeps_messages_and_build_logs_only() {
+        let text = |event: Value| nix_event_text(&event);
+        assert_eq!(
+            text(json!({"action": "msg", "level": 3, "msg": "copying path"})),
+            Some("copying path".to_string())
+        );
+        // Chatty debugging messages and bookkeeping are dropped.
+        assert_eq!(
+            text(json!({"action": "msg", "level": 4, "msg": "evaluating file"})),
+            None
+        );
+        assert_eq!(
+            text(json!({"action": "start", "type": 105, "text": "building '/nix/store/x.drv'"})),
+            Some("building '/nix/store/x.drv'".to_string())
+        );
+        assert_eq!(
+            text(json!({"action": "result", "type": 101, "fields": ["compiling"]})),
+            Some("compiling".to_string())
+        );
+        assert_eq!(
+            text(json!({"action": "result", "type": 105, "fields": [1, 2, 0, 0]})),
+            None
         );
     }
 }
