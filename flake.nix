@@ -332,10 +332,9 @@
                 cp archive.tar $out/
                 runHook postInstall
               '';
-            } // lib.optionalAttrs (!isLinux) {
-              # crane's hooks rewrite store paths inside every file in $out,
-              # the tar included, which breaks the code signatures of the
-              # Darwin test binaries inside it; macOS then kills them on launch.
+              # crane's hooks rewrite store paths inside every file in $out, the
+              # tar included. That breaks the code signatures of the Darwin test
+              # binaries inside it, and on Linux takes minutes over the tar.
               doNotRemoveReferencesToVendorDir = true;
               doNotRemoveReferencesToRustToolchain = true;
             });
