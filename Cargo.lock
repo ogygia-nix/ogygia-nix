@@ -3438,6 +3438,7 @@ dependencies = [
  "libfuzzer-sys",
  "ogygia-nix-eval",
  "rnix",
+ "rowan",
  "sha2 0.10.9",
  "strum",
  "tempfile",

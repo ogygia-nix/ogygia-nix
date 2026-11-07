@@ -1,14 +1,17 @@
-//! Mutations that edit whole nodes and tokens of rnix's syntax tree, or
-//! insert Nix's keywords and operators between them, so changes to an input
-//! stay meaningful Nix more often than byte edits do. They only make some
-//! inputs likelier: libFuzzer's byte-level mutations, which can turn any
-//! input into any other, run alongside them. In a flake bundle they edit the
-//! Nix files it holds, one at a time.
+//! Mutations that edit whole nodes and tokens of rnix's syntax tree, insert
+//! Nix's keywords and operators between them, or replace expressions with
+//! ones that fail, so changes to an input stay meaningful Nix more often
+//! than byte edits do. They only make some inputs likelier: libFuzzer's
+//! byte-level mutations, which can turn any input into any other, run
+//! alongside them. In a flake bundle they edit the Nix files it holds, one
+//! at a time.
 
 use std::ops::Range;
 
 use ogygia_nix_eval::run_with_stack;
+use rnix::SyntaxKind::*;
 use rnix::TextRange;
+use rowan::ast::AstNode;
 
 struct Rng(u32);
 
@@ -26,16 +29,52 @@ impl Rng {
     }
 }
 
-/// The ranges of every node and token in rnix's syntax tree of `text`,
-/// which is never empty: the root spans all of it.
-fn elements(text: &str) -> Vec<TextRange> {
+/// A node or token of rnix's syntax tree.
+struct Element {
+    range: TextRange,
+    /// Whether it is an expression that any other may replace: not, say,
+    /// an attribute name or a function's parameter.
+    expr: bool,
+}
+
+/// Every node and token in rnix's syntax tree of `text`, in preorder, so
+/// never empty: the first is the root, which spans all of it.
+fn elements(text: &str) -> Vec<Element> {
     run_with_stack(|| {
         rnix::Root::parse(text)
             .syntax()
             .descendants_with_tokens()
-            .map(|e| e.text_range())
+            .map(|e| Element {
+                range: e.text_range(),
+                expr: rnix::ast::Expr::can_cast(e.kind())
+                    && !e.parent().is_some_and(|p| {
+                        matches!(
+                            p.kind(),
+                            NODE_ATTRPATH
+                                | NODE_INHERIT
+                                | NODE_IDENT_PARAM
+                                | NODE_PAT_BIND
+                                | NODE_PAT_ENTRY
+                        )
+                    }),
+            })
             .collect()
     })
+}
+
+/// The range of an expression of `elements`, picked at random, or of all
+/// of the text when it has none.
+fn expr(elements: &[Element], rng: &mut Rng) -> TextRange {
+    let exprs: Vec<TextRange> = elements
+        .iter()
+        .filter(|e| e.expr)
+        .map(|e| e.range)
+        .collect();
+    if exprs.is_empty() {
+        elements[0].range
+    } else {
+        exprs[rng.below(exprs.len())]
+    }
 }
 
 /// One of the parts of `text` holding Nix source, picked at random.
@@ -51,19 +90,36 @@ const TOKENS: &[&str] = &[
     ":", "@", "...", "=", ";", ",", "{", "}", "[", "]", "(", ")",
 ];
 
+/// Expressions that fail when evaluated, some in ways `builtins.tryEval`
+/// catches and some not.
+const ERRORS: &[&str] = &[
+    "(throw \"t\")",
+    "(abort \"a\")",
+    "(assert false; null)",
+    "(1 + \"\")",
+    "(let x = x; in x)",
+];
+
 fn splice(text: &str, range: TextRange, with: &str) -> String {
     let (start, end) = (usize::from(range.start()), usize::from(range.end()));
     [&text[..start], with, &text[end..]].concat()
 }
 
-/// Replace, delete, copy or swap whole nodes and tokens of `text`, or
-/// insert a keyword or operator after one.
+/// Replace an expression of `text` with one that fails.
+fn inject_error(text: &str, elements: &[Element], rng: &mut Rng) -> String {
+    let at = expr(elements, rng);
+    splice(text, at, ERRORS[rng.below(ERRORS.len())])
+}
+
+/// Replace, delete, copy or swap whole nodes and tokens of `text`, insert a
+/// keyword or operator after one, or replace an expression with one that
+/// fails.
 fn mutate_tree(text: &str, rng: &mut Rng) -> String {
-    let ranges = elements(text);
-    let a = ranges[rng.below(ranges.len())];
-    let b = ranges[rng.below(ranges.len())];
+    let elements = elements(text);
+    let a = elements[rng.below(elements.len())].range;
+    let b = elements[rng.below(elements.len())].range;
     let piece = &text[b];
-    match rng.below(5) {
+    match rng.below(6) {
         0 => splice(text, a, piece),
         1 => splice(text, a, ""),
         2 => splice(text, TextRange::empty(a.end()), &format!(" {piece}")),
@@ -71,7 +127,7 @@ fn mutate_tree(text: &str, rng: &mut Rng) -> String {
             let token = TOKENS[rng.below(TOKENS.len())];
             splice(text, TextRange::empty(a.end()), &format!(" {token} "))
         }
-        _ => {
+        4 => {
             let (first, second) = if a.start() <= b.start() {
                 (a, b)
             } else {
@@ -90,6 +146,7 @@ fn mutate_tree(text: &str, rng: &mut Rng) -> String {
             ]
             .concat()
         }
+        _ => inject_error(text, &elements, rng),
     }
 }
 
@@ -141,8 +198,8 @@ pub fn crossover(data1: &[u8], data2: &[u8], out: &mut [u8], seed: u32) -> usize
         Some((a, to, b)) => {
             let into = elements(&a[to.clone()]);
             let from = elements(b);
-            let piece = &b[from[rng.below(from.len())]];
-            let at = into[rng.below(into.len())] + rnix::TextSize::from(to.start as u32);
+            let piece = &b[from[rng.below(from.len())].range];
+            let at = into[rng.below(into.len())].range + rnix::TextSize::from(to.start as u32);
             splice(a, at, piece).into_bytes()
         }
         None => {
@@ -168,6 +225,40 @@ mod tests {
         "(null} ,; ''",
         "日本語 /* unterminated",
     ];
+
+    /// Inputs that parse, with an expression in every kind of place.
+    const VALID: &[&str] = &[
+        "1",
+        "let a = { b = [ 1 2.5 ]; c = \"x${y}z\"; }; in a.b ++ [ (a.c or null) ]",
+        "{ x, y ? 1, ... }@args: ''\n  é ${toString x} ''$\n''",
+        "rec { a = ./x; b = a; inherit (a) c; \"d\" = -1; ${e} = a ? f.g; }",
+        "x: { f = y: x.${y} or <nixpkgs>; inherit x; } // { or = 1; }",
+    ];
+
+    /// Every output of `mutation` on [`VALID`] over a few seeds, checking
+    /// that each still parses.
+    fn valid_outputs(mutation: fn(&str, &[Element], &mut Rng) -> String) -> Vec<String> {
+        let mut outs = Vec::new();
+        for input in VALID {
+            assert!(rnix::Root::parse(input).errors().is_empty(), "{input:?}");
+            let elements = elements(input);
+            for seed in 0..200 {
+                let out = mutation(input, &elements, &mut Rng::new(seed));
+                let errors = rnix::Root::parse(&out).errors().to_vec();
+                assert!(errors.is_empty(), "{input:?} -> {out:?}: {errors:?}");
+                outs.push(out);
+            }
+        }
+        outs
+    }
+
+    #[test]
+    fn injected_errors_parse() {
+        let outs = valid_outputs(inject_error);
+        for error in ERRORS {
+            assert!(outs.iter().any(|o| o.contains(error)), "never {error}");
+        }
+    }
 
     fn no_fallback(_: &mut [u8], _: usize, _: usize) -> usize {
         panic!("fell back to libFuzzer's mutation")
