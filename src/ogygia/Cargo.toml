@@ -21,6 +21,7 @@ nebula = [
 ]
 updated = [
     "dep:chrono",
+    "dep:serde_json",
     "dep:ogygia-updated",
     "dep:humantime",
     "dep:libc",

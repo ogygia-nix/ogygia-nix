@@ -32,3 +32,4 @@ pub use config::DEFAULT_CONFIG_PATH;
 pub use engine::Outcome;
 pub use engine::Trigger;
 pub use engine::run_once;
+pub use system::Activation;
