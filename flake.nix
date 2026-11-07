@@ -296,6 +296,10 @@
               pname = "ogygia-test-deps";
               version = "git";
               CARGO_PROFILE = "test";
+              # The archive reuses only what the check phase's
+              # `cargo test --no-run` builds, so skip crane's default
+              # `cargo check --all-targets` and `cargo build`.
+              buildPhaseCargoCommand = "";
             });
 
             ogygia-nextest-archive = craneLib.buildPackage (commonArgs // {
