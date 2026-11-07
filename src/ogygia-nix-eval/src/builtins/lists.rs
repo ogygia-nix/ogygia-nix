@@ -134,7 +134,14 @@ pub fn gen_list<'a>(ev: &Eval<'a>, f: Value<'a>, n: Value<'a>) -> R<'a> {
         return eval_err(format!("cannot create list of size {n}"));
     }
     let f = ev.force_function(f)?;
-    let out: Vec<Value<'a>> = (0..n).map(|i| ev.lazy_app(f, Value::Int(i))).collect();
+    let mut out: Vec<Value<'a>> = Vec::new();
+    let reserved = usize::try_from(n)
+        .ok()
+        .is_some_and(|n| out.try_reserve_exact(n).is_ok());
+    if !reserved {
+        return eval_err("out of memory");
+    }
+    out.extend((0..n).map(|i| ev.lazy_app(f, Value::Int(i))));
     Ok(ev.list(&out))
 }
 
