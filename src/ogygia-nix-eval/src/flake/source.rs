@@ -521,6 +521,33 @@ fn fetch_git_rev(io: &Io, dir: &Path, rev: &str, locked: &Attrs, what: &str) -> 
     })
 }
 
+/// The revision a local Git input `attrs` without one is locked to: the
+/// commit its `ref` names, or else `HEAD` if the working tree is clean.
+/// `None` leaves it unlocked, as are a dirty working tree and inputs of
+/// any other kind.
+pub fn locked_rev(attrs: &Attrs) -> Result<Option<String>> {
+    let url = flakeref::get_str(attrs, "url").unwrap_or("");
+    let (Some("git"), None, Some(dir)) = (
+        flakeref::get_str(attrs, "type"),
+        flakeref::get_str(attrs, "rev"),
+        file_url_path(url),
+    ) else {
+        return Ok(None);
+    };
+    let repo = open_repo(&dir)?;
+    if let Some(name) = flakeref::get_str(attrs, "ref") {
+        let commit = repo
+            .find_reference(name)
+            .with_context(|| format!("Git repository '{}' has no ref '{name}'", dir.display()))?
+            .peel_to_commit()?;
+        return Ok(Some(commit.id.to_string()));
+    }
+    if is_dirty(&repo)? {
+        return Ok(None);
+    }
+    Ok(repo.head_commit().ok().map(|c| c.id.to_string()))
+}
+
 /// The source `locked` names, read from the store directory, if it is there.
 fn from_store(io: &Io, locked: &Attrs) -> Result<Option<Source>> {
     let Some(nar_hash) = flakeref::get_str(locked, "narHash") else {

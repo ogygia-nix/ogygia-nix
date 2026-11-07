@@ -1,0 +1,20 @@
+#~flake path:@dir(root)#.
+#~tree root path
+#~file flake.nix
+{ inputs.nf = { url = "path:@dir(nf)"; flake = false; }; outputs = { self, nf }: { v = "${nf}"; }; }
+#~file flake.lock
+{
+  "nodes": {
+    "nf": {
+      "flake": false,
+      "locked": { "path": "@dir(nf)", "type": "path" },
+      "original": { "path": "@dir(nf)", "type": "path" }
+    },
+    "root": { "inputs": { "nf": "nf" } }
+  },
+  "root": "root",
+  "version": 7
+}
+#~tree nf path
+#~file readme
+not a flake

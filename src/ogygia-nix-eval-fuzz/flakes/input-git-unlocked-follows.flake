@@ -1,0 +1,38 @@
+#~flake path:@dir(root)#v
+#~tree old store
+#~file flake.nix
+{ outputs = { self }: { v = "old"; }; }
+#~tree mid store
+#~file flake.nix
+{ inputs.x.url = "path:@dir(xt)"; inputs.w.url = "path:@dir(wt)"; outputs = { self, x, w }: { v = [ x.v w.v ]; }; }
+#~tree xt path
+#~file flake.nix
+{ outputs = { self }: { v = "x"; }; }
+#~tree wt path
+#~file flake.nix
+{ outputs = { self }: { v = "w"; }; }
+#~tree root path
+#~file flake.nix
+{ inputs.dep.url = "github:o/dep"; inputs.y.url = "github:o/y"; inputs.gd.url = "git+file://@dir(gd)"; outputs = { self, dep, ... }: { v = dep.v; }; }
+#~file flake.lock
+{
+  "nodes": {
+    "dep": {
+      "inputs": { "x": [ "y" ], "w": "y" },
+      "locked": { "lastModified": 1700000000, "narHash": "@narHash(mid)", "owner": "o", "repo": "dep", "rev": "0123456789abcdef0123456789abcdef01234567", "type": "github" },
+      "original": { "owner": "o", "repo": "dep", "type": "github" }
+    },
+    "y": {
+      "locked": { "lastModified": 1700000000, "narHash": "@narHash(old)", "owner": "o", "repo": "y", "rev": "1123456789abcdef0123456789abcdef01234567", "type": "github" },
+      "original": { "owner": "o", "repo": "y", "type": "github" }
+    },
+    "root": { "inputs": { "dep": "dep", "y": "y" } }
+  },
+  "root": "root",
+  "version": 7
+}
+#~tree gd git
+#~file flake.nix
+{ outputs = { self }: { }; }
+#~file x staged
+y
