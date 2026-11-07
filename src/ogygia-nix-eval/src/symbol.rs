@@ -83,6 +83,7 @@ well_known! {
     wrong = "wrong",
     args = "args",
     body = "body",
+    overrides = "__overrides",
     sub = "__sub",
     mul = "__mul",
     div = "__div",

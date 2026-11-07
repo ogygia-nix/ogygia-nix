@@ -126,6 +126,10 @@ pub struct AttrsDef<'a> {
     /// The frame the attribute set introduces, or `None` if its values are
     /// evaluated directly in the enclosing environment.
     pub frame: Option<&'a [ExprRef<'a>]>,
+    /// Whether the set is `rec`: its `__overrides` attribute, if it has
+    /// one, then replaces and adds to its attributes, and rebinds the names
+    /// it replaces in its scope.
+    pub recursive: bool,
     /// Sorted by symbol.
     pub statics: &'a [StaticAttr<'a>],
     pub dynamics: &'a [DynamicAttr<'a>],

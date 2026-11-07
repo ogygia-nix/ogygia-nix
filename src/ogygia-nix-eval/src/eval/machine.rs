@@ -143,6 +143,9 @@ pub(super) enum Frame<'a> {
     },
     /// The name of a dynamic attribute of a set.
     Dynamic(Box<Dynamic<'a>>),
+    /// The static `__overrides` attribute of a `rec` set, before its dynamic
+    /// attributes.
+    Overrides(Box<Dynamic<'a>>),
 }
 
 /// A string being built, with its context.
@@ -524,6 +527,24 @@ impl<'a> Eval<'a> {
                     });
                 }
                 d.i += 1;
+                self.dynamic_attrs(stack, d)
+            }
+            Frame::Overrides(mut d) => {
+                let overrides = self.force_attrs(v).map_err(|mut e| {
+                    e.push_trace("while evaluating the `__overrides` attribute", None);
+                    e
+                })?;
+                for o in overrides.entries {
+                    match d.def.statics.binary_search_by_key(&o.name, |s| s.name) {
+                        Ok(i) => {
+                            if let AttrValue::Slot(slot) = d.def.statics[i].value {
+                                d.env.slots[slot as usize].set(o.value);
+                            }
+                            d.entries[i] = *o;
+                        }
+                        Err(_) => d.entries.push(*o),
+                    }
+                }
                 self.dynamic_attrs(stack, d)
             }
         }
@@ -964,18 +985,28 @@ impl<'a> Eval<'a> {
                 },
             })
             .collect();
-        if def.dynamics.is_empty() {
-            return Ok(Step::Return(self.attrs_sorted(&entries)));
+        let overrides = def
+            .recursive
+            .then(|| {
+                def.statics
+                    .binary_search_by_key(&self.ctx.syms.overrides, |s| s.name)
+            })
+            .and_then(Result::ok);
+        let d = Box::new(Dynamic {
+            def,
+            env,
+            entries,
+            i: 0,
+        });
+        if let Some(i) = overrides {
+            let v = d.entries[i].value;
+            stack.push(Frame::Overrides(d));
+            return Ok(Step::Force(v));
         }
-        self.dynamic_attrs(
-            stack,
-            Box::new(Dynamic {
-                def,
-                env,
-                entries,
-                i: 0,
-            }),
-        )
+        if def.dynamics.is_empty() {
+            return Ok(Step::Return(self.attrs_sorted(&d.entries)));
+        }
+        self.dynamic_attrs(stack, d)
     }
 
     /// Add the dynamic attributes of a set from the one at `d.i` on.

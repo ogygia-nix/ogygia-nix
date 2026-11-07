@@ -1329,6 +1329,7 @@ impl<'a> Compiler<'a> {
         let b = self.bindings(set, recursive, |_| Ok(()))?;
         Ok(Expr::Attrs(self.ctx.alloc(AttrsDef {
             frame: b.frame,
+            recursive,
             statics: self.ctx.alloc_slice(b.statics),
             dynamics: self.ctx.alloc_slice(b.dynamics),
         })))
