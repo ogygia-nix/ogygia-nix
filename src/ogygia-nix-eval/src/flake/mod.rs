@@ -390,22 +390,16 @@ pub(crate) fn eval_json<'a>(
     lock.check_locked()?;
     let located = Located { source, dir };
     // Nix locks the inputs anew, and goes on without writing the lock file
-    // if that leaves some unlocked.
-    let (lock, located) = if lock.locks(&loaded.inputs) {
-        let located = HashMap::from([(lock.root.clone(), located)]);
-        (lock, located)
-    } else {
-        let (lock, located) = update::lock(ev, env, &lock, located, &loaded.inputs)?;
-        if !lock.has_unlocked() {
-            return eval_err(format!(
-                "flake '{shown}' requires lock file changes but they're not allowed due to '--no-update-lock-file'"
-            ));
-        }
-        (lock, located)
-    };
+    // if that changes nothing or leaves some unlocked.
+    let (new, located) = update::lock(ev, env, &lock, located, &loaded.inputs)?;
+    if !new.same(&lock) && !new.has_unlocked() {
+        return eval_err(format!(
+            "flake '{shown}' requires lock file changes but they're not allowed due to '--no-update-lock-file'"
+        ));
+    }
     let flakes = flakes.get_or_init(|| Flakes {
         env,
-        lock,
+        lock: new,
         root_ref: shown.clone(),
         sources: RefCell::new(HashMap::new()),
         values: RefCell::new(HashMap::new()),

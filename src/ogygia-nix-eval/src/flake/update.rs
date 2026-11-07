@@ -1,7 +1,7 @@
-//! Locking a flake's inputs anew, as Nix does when its lock file does not
-//! lock them: an input whose reference is unchanged keeps its node, and
-//! every other is fetched, along with the inputs of its `flake.nix` as its
-//! own lock file locks them.
+//! Locking a flake's inputs anew, as Nix does before evaluating it: an
+//! input whose reference is unchanged keeps its node, and every other is
+//! fetched, along with the inputs of its `flake.nix` as its own lock file
+//! locks them.
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -294,8 +294,9 @@ impl<'a> Locker<'_, 'a> {
         }
         let mut locked = attrs.clone();
         let (located, parent) = match relative(&attrs) {
-            // Within the flake it is relative to, and from the same source,
-            // of which it knows nothing more.
+            // Within the flake declaring it, and from the same source, of
+            // which it knows nothing more, though its node names the flake
+            // whose input it is.
             Some(rel) => {
                 let base = &self.located[&key(decl)];
                 let located = Located {
@@ -305,7 +306,7 @@ impl<'a> Locker<'_, 'a> {
                         info: Info::default(),
                     },
                 };
-                (located, Some(decl.to_vec()))
+                (located, Some(path[..path.len() - 1].to_vec()))
             }
             None => {
                 if let Some(rev) = r(source::locked_rev(&locked))? {
