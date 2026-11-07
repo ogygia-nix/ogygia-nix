@@ -3,6 +3,7 @@
 mod bundle;
 mod cgroup;
 mod check;
+mod dict;
 mod findings;
 mod flake;
 mod minimise;
@@ -15,6 +16,7 @@ pub use check::Budget;
 pub use check::Outcome;
 pub use check::block_network;
 pub use check::check;
+pub use dict::dictionary;
 pub use findings::Recheck;
 pub use findings::recheck;
 pub use findings::record;

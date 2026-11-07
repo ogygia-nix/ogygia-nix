@@ -44,11 +44,12 @@ fn nix_part(text: &str, rng: &mut Rng) -> Option<Range<usize>> {
     (!parts.is_empty()).then(|| parts[rng.below(parts.len())].clone())
 }
 
-/// The keywords and operators of Nix.
+/// The keywords and operators of Nix, but for `|>` and `<|`, which Nix
+/// rejects without an experimental feature the comparison leaves off.
 const TOKENS: &[&str] = &[
     "assert", "else", "if", "in", "inherit", "let", "or", "rec", "then", "with", "->", "||", "&&",
-    "==", "!=", "<", "<=", ">", ">=", "//", "++", "+", "-", "*", "/", "!", "?", ".", "|>", "<|",
-    ":", "@", "...", "=", ";", ",", "{", "}", "[", "]", "(", ")",
+    "==", "!=", "<", "<=", ">", ">=", "//", "++", "+", "-", "*", "/", "!", "?", ".", ":", "@",
+    "...", "=", ";", ",", "{", "}", "[", "]", "(", ")",
 ];
 
 fn splice(text: &str, range: TextRange, with: &str) -> String {

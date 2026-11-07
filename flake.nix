@@ -121,6 +121,7 @@
                 ./src/ogygia-clevis/tests/fixtures/sss.jwe
                 ./src/ogygia-nix-eval/tests/cases
                 ./src/ogygia-nix-eval-fuzz/README.md
+                ./src/ogygia-nix-eval-fuzz/nix.dict
                 ./src/ogygia-nix-eval-fuzz/flakes
               ];
             };
@@ -364,6 +365,7 @@
                   (craneLib.fileset.commonCargoSources ./src/ogygia-nix-eval)
                   (craneLib.fileset.commonCargoSources ./src/ogygia-nix-eval-fuzz)
                   ./src/ogygia-nix-eval-fuzz/README.md
+                  ./src/ogygia-nix-eval-fuzz/nix.dict
                 ];
               };
               inherit version;
@@ -415,8 +417,7 @@
             '';
 
             # Real Nix code for the fuzzer to start from: our equivalence cases,
-            # nixpkgs' lib, rnix's parser tests, and flake bundles. The
-            # dictionary adds the name of every builtin of the pinned Nix.
+            # nixpkgs' lib, rnix's parser tests, and flake bundles.
             fuzzSeeds =
               let
                 lock = builtins.fromTOML (builtins.readFile ./Cargo.lock);
@@ -424,7 +425,7 @@
                   (lib.findFirst (p: p.name == "rnix") null lock.package);
               in
               pkgs.runCommand "ogygia-nix-eval-fuzz-seeds"
-                { nativeBuildInputs = [ referenceNix pkgs.jq ]; }
+                { }
                 ''
                   mkdir -p $out/seeds
                   find ${./src/ogygia-nix-eval/tests/cases} ${nixpkgs}/lib \
@@ -435,12 +436,6 @@
                       seed=$out/seeds/$(sha1sum < "$f" | cut -c1-40)
                       [ -e "$seed" ] || cp "$f" "$seed"
                     done
-
-                  export HOME=$TMPDIR NIX_STATE_DIR=$TMPDIR/state
-                  cat ${./src/ogygia-nix-eval-fuzz/nix.dict} > $out/nix.dict
-                  nix-instantiate --eval --json --readonly-mode --store dummy:// \
-                    --expr 'builtins.attrNames builtins' |
-                    jq -r '.[] | "\"\(.)\""' >> $out/nix.dict
                 '';
 
           in

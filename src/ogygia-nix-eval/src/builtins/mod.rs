@@ -18,6 +18,7 @@ use std::cell::Cell;
 
 use enum_map::Enum;
 use enum_map::EnumMap;
+use strum::EnumIter;
 use strum::EnumString;
 use strum::IntoStaticStr;
 
@@ -39,7 +40,7 @@ pub const NIX_VERSION: &str = match option_env!("OGYGIA_NIX_EVAL_NIX_VERSION") {
 };
 
 /// A builtin, named as in the `builtins` set.
-#[derive(Clone, Copy, PartialEq, Eq, Enum, EnumString, IntoStaticStr)]
+#[derive(Clone, Copy, PartialEq, Eq, Enum, EnumIter, EnumString, IntoStaticStr)]
 #[strum(serialize_all = "camelCase")]
 pub enum Builtin {
     Abort,

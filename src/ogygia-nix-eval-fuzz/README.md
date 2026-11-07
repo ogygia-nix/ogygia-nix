@@ -109,9 +109,12 @@ between them, within one of the Nix files of a flake bundle. Those make meaningf
 unreachable.
 
 The Nix package ships seed inputs to start from (the equivalence cases,
-nixpkgs' `lib`, rnix's parser tests, and the flake bundles in `flakes`)
-and a dictionary of Nix tokens, bundle directives and the name of every
-builtin of the pinned Nix.
+nixpkgs' `lib`, rnix's parser tests, and the flake bundles in `flakes`).
+`run` gives libFuzzer a dictionary: Nix's tokens, bundle directives, the
+attribute and string names Nix gives a meaning to (in `nix.dict`, each
+attribute name also as `NAME = `), every builtin as `builtins.NAME` and as
+the global scope spells it (bare or `__NAME`), and the identifier-like
+string literals of ogygia-nix-eval's source.
 
 ## Running it
 

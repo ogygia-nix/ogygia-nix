@@ -400,6 +400,13 @@ fn run(dir: &Path, jobs: NonZero<usize>) -> ExitCode {
     if !minimised {
         report!("fuzzing the corpus and seeds as they were");
     }
+    let dict = match write_dictionary() {
+        Ok(dict) => dict,
+        Err(e) => {
+            report!("writing the dictionary: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
     report!("fuzzing with {jobs} jobs");
     let path = |p: &Path| p.display().to_string();
     let mut args = vec![
@@ -410,7 +417,7 @@ fn run(dir: &Path, jobs: NonZero<usize>) -> ExitCode {
         "-ignore_ooms=1".to_owned(),
         TIMEOUT.to_owned(),
         NO_ARTIFACTS.to_owned(),
-        format!("-dict={seeds}/nix.dict"),
+        format!("-dict={}", path(dict.path())),
         format!("--findings={}", path(&findings)),
         format!("--stats={}", path(&stats)),
         path(&corpus),
@@ -425,6 +432,14 @@ fn run(dir: &Path, jobs: NonZero<usize>) -> ExitCode {
         args.push(format!("{seeds}/seeds"));
     }
     fuzz(args)
+}
+
+/// [`ogygia_nix_eval_fuzz::dictionary`] in a temporary file, which every
+/// fuzzing process reads.
+fn write_dictionary() -> std::io::Result<tempfile::NamedTempFile> {
+    let mut file = tempfile::NamedTempFile::new()?;
+    file.write_all(ogygia_nix_eval_fuzz::dictionary().as_bytes())?;
+    Ok(file)
 }
 
 /// A pipe whose write end, unlike the read end, is inherited by the

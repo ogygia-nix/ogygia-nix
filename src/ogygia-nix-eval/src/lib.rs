@@ -30,6 +30,7 @@ mod store;
 mod symbol;
 mod value;
 
+pub use builtins::Builtin;
 pub use context::Context;
 pub use diagnostic::Diagnostic;
 pub use eval::Eval;
