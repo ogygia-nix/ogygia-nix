@@ -2,7 +2,6 @@
 
 use std::env;
 use std::ffi::OsStr;
-use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -12,6 +11,10 @@ use clap::Args;
 use clap::Subcommand;
 use clap_complete::engine::ArgValueCompleter;
 use clap_complete::engine::CompletionCandidate;
+use ogygia_updated::control::Connection;
+use ogygia_updated::control::Request;
+
+mod privileges;
 
 /// Environment override for the daemon configuration the branch completer
 /// reads, mirroring `OGYGIA_CONFIG` for the CLI's own config.
@@ -102,27 +105,37 @@ fn complete_branch(current: &OsStr) -> Vec<CompletionCandidate> {
 
 impl UpdateArgs {
     pub fn run(&self) -> Result<()> {
-        let message = match &self.command {
-            None => ogygia_updated::control::request_update(&self.socket)?,
-            Some(UpdateCommand::Tick) => ogygia_updated::control::request_tick(&self.socket)?,
-            Some(UpdateCommand::Canary(canary)) => canary.run(&self.socket)?,
+        let request = match &self.command {
+            None => Request::Update,
+            Some(UpdateCommand::Tick) => Request::Tick,
+            Some(UpdateCommand::Canary(canary)) => canary.request()?,
         };
-        println!("{message}");
+
+        // Root is needed only to reach the socket. Nothing after this,
+        // from reading the daemon's answer onwards, keeps it.
+        let connection = Connection::send(&self.socket, &request)?;
+        privileges::drop_root()?;
+
+        println!("{}", connection.receive()?);
         Ok(())
     }
 }
 
 impl CanaryArgs {
-    fn run(&self, socket: &Path) -> Result<String> {
+    fn request(&self) -> Result<Request> {
         match &self.command {
-            Some(CanaryCommand::Status) => ogygia_updated::control::request_canary_status(socket),
+            Some(CanaryCommand::Status) => Ok(Request::CanaryStatus),
             None => {
                 let branch = self
                     .branch
                     .clone()
                     .context("a branch to trial is required (or use `canary status`)")?;
                 let timeout = (!self.forever).then(|| Duration::from(self.duration).as_secs());
-                ogygia_updated::control::request_canary(socket, branch, timeout, self.persist)
+                Ok(Request::Canary {
+                    branch,
+                    timeout,
+                    persist: self.persist,
+                })
             }
         }
     }
