@@ -96,7 +96,7 @@ fn main() {
 
     let cli = Cli::parse();
     if let Err(error) = cli.command.run() {
-        error!(%error, "fatal error");
+        error!(error = format!("{error:#}"), "fatal error");
         process::exit(1);
     }
 }
