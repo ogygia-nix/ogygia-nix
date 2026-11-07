@@ -107,11 +107,13 @@ alongside mutations that replace, delete, copy, swap and splice whole nodes
 and tokens of rnix's syntax tree, insert Nix's keywords and operators
 between them, replace an expression with one that fails (a `throw`, an
 `abort`, a failed `assert`, a type error or infinite recursion), wrap one
-in a `let` binding `__findFile` and `__nixPath`, or give an attribute set
-an attribute Nix treats specially (`__functor`, `__overrides`,
-`type = "derivation"` and the like) or toggle its `rec`, within one of the
-Nix files of a flake bundle. Those make meaningful Nix likelier but never
-make any input unreachable.
+in a `let` binding `__findFile` and `__nixPath`, give an attribute set an
+attribute Nix treats specially (`__functor`, `__overrides`,
+`type = "derivation"` and the like) or toggle its `rec`, or replace a
+number, string or path with an edge case (the largest integer, negative
+zero, an escape, indentation, a path to normalise), within one of
+the Nix files of a flake bundle. Those make meaningful Nix likelier but
+never make any input unreachable.
 
 The Nix package ships seed inputs to start from (the equivalence cases,
 nixpkgs' `lib`, rnix's parser tests, and the flake bundles in `flakes`)
