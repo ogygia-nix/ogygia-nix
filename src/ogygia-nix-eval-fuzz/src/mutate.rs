@@ -6,7 +6,10 @@
 //! an input stay meaningful Nix more often than byte edits do. They only
 //! make some inputs likelier: libFuzzer's byte-level mutations, which can
 //! turn any input into any other, run alongside them. In a flake bundle
-//! they edit the Nix files it holds, one at a time.
+//! they edit the Nix files it holds, one at a time, or half the time its
+//! structure, as [`structure`] describes.
+
+mod structure;
 
 use std::ops::Range;
 
@@ -423,6 +426,30 @@ fn mutate_tree(text: &str, rng: &mut Rng) -> String {
     }
 }
 
+/// `text` with one of its parts of Nix source [mutated](mutate_tree), or
+/// half the time in a well-formed bundle its structure, if it has either.
+fn mutate_text(text: &str, rng: &mut Rng) -> Option<String> {
+    if let Some(bundle) = crate::bundle::parse(text)
+        && rng.below(2) == 0
+    {
+        return Some(structure::mutate_bundle(&bundle, rng));
+    }
+    mutate_nix(text, rng)
+}
+
+/// `text` with one of its parts of Nix source [mutated](mutate_tree).
+fn mutate_nix(text: &str, rng: &mut Rng) -> Option<String> {
+    let part = nix_part(text, rng)?;
+    Some(
+        [
+            &text[..part.start],
+            mutate_tree(&text[part.clone()], rng).as_str(),
+            &text[part.end..],
+        ]
+        .concat(),
+    )
+}
+
 /// libFuzzer's custom mutator: mutate the input `data[..size]` in place
 /// into at most `max_size` bytes, returning the new size. Half the time,
 /// and whenever the input is not UTF-8 or the result would not fit, this is
@@ -437,18 +464,11 @@ pub fn mutate(
     let mut rng = Rng::new(seed);
     if rng.below(2) == 0
         && let Ok(text) = std::str::from_utf8(&data[..size])
-        && let Some(part) = nix_part(text, &mut rng)
+        && let Some(out) = mutate_text(text, &mut rng)
+        && out.len() <= max_size
     {
-        let out = [
-            &text[..part.start],
-            mutate_tree(&text[part.clone()], &mut rng).as_str(),
-            &text[part.end..],
-        ]
-        .concat();
-        if out.len() <= max_size {
-            data[..out.len()].copy_from_slice(out.as_bytes());
-            return out.len();
-        }
+        data[..out.len()].copy_from_slice(out.as_bytes());
+        return out.len();
     }
     fallback(data, size, max_size)
 }
@@ -648,11 +668,8 @@ mod tests {
                 .collect()
         };
         for seed in 0..500 {
-            let mut data = bundle.as_bytes().to_vec();
-            data.resize(4096, 0);
-            let size = mutate(&mut data, bundle.len(), 4096, seed, |_, size, _| size);
-            let out = std::str::from_utf8(&data[..size]).unwrap();
-            assert_eq!(directives(out), directives(bundle), "seed {seed}");
+            let out = mutate_nix(bundle, &mut Rng::new(seed)).unwrap();
+            assert_eq!(directives(&out), directives(bundle), "seed {seed}");
             assert!(out.ends_with("{ }\n"), "seed {seed}: {out:?}");
         }
     }

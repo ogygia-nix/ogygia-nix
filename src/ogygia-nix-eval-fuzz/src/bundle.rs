@@ -16,8 +16,10 @@
 //!   (written after the commit and not added, so untracked or modified).
 //!
 //! In the reference and every file, `@dir(NAME)` stands for the absolute
-//! path of tree `NAME`, and `@narHash(NAME)` for the NAR hash of a store
-//! tree declared before it, so that a lock file can refer to them.
+//! path of tree `NAME`, and `@narHash(NAME)` for the NAR hash of store
+//! tree `NAME`, so that a lock file can refer to them. Store trees are
+//! written first, in order, so in a store tree it stands only for a store
+//! tree declared before it.
 
 use std::collections::HashSet;
 
