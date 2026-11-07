@@ -229,7 +229,10 @@ There it stops at the first divergence and prints its report, unless
 `--findings=DIR` says where to record findings; `--stats=FILE` sends the
 outcome counts to a file rather than standard error. `nix-instantiate` is
 `$OGYGIA_NIX_EVAL_NIX_INSTANTIATE`, else the path baked in at build time
-from `$OGYGIA_NIX_INSTANTIATE_BIN`, else found on `PATH`.
+from `$OGYGIA_NIX_INSTANTIATE_BIN`, else found on `PATH`. Unlike the
+package, which instruments only ogygia-nix-eval, rnix and the fuzzer,
+such a build instruments every crate, so that code in its other
+dependencies steers the search too.
 
 ## How far to trust a long run
 

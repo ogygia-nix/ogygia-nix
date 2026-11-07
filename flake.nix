@@ -368,6 +368,24 @@
               };
               inherit version;
               nativeBuildInputs = commonArgs.nativeBuildInputs ++ [ pkgs.cargo-fuzz ];
+              # cargo-fuzz instruments every crate for coverage; only ours and
+              # the parser's should steer the search.
+              RUSTC_WRAPPER = pkgs.writeShellScript "fuzz-rustc" ''
+                rustc=$1
+                shift
+                case " $* " in
+                  *" --crate-name ogygia_nix_eval "* | *" --crate-name ogygia_nix_eval_fuzz "* | *" --crate-name rnix "*)
+                    exec "$rustc" "$@" ;;
+                esac
+                args=()
+                for arg; do
+                  case $arg in
+                    -Cpasses=sancov-module | -Cllvm-args=-sanitizer-coverage-*) ;;
+                    *) args+=("$arg") ;;
+                  esac
+                done
+                exec "$rustc" "''${args[@]}"
+              '';
               buildPhaseCargoCommand = ''
                 cargo fuzz build --sanitizer none --release \
                   --fuzz-dir src/ogygia-nix-eval-fuzz ogygia-nix-eval-fuzz
