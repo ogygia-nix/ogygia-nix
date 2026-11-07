@@ -1,16 +1,20 @@
 //! Mutations that edit whole nodes and tokens of rnix's syntax tree, insert
-//! Nix's keywords and operators between them, or replace expressions with
-//! ones that fail, so changes to an input stay meaningful Nix more often
-//! than byte edits do. They only make some inputs likelier: libFuzzer's
-//! byte-level mutations, which can turn any input into any other, run
-//! alongside them. In a flake bundle they edit the Nix files it holds, one
-//! at a time.
+//! Nix's keywords and operators between them, replace expressions with
+//! ones that fail, wrap them in `let`s binding `__findFile` and
+//! `__nixPath`, or give attribute sets attributes Nix treats specially or
+//! toggle their `rec`, so changes to an input stay meaningful Nix more
+//! often than byte edits do. They only make some inputs likelier:
+//! libFuzzer's byte-level mutations, which can turn any input into any
+//! other, run alongside them. In a flake bundle they edit the Nix files it
+//! holds, one at a time.
 
 use std::ops::Range;
 
 use ogygia_nix_eval::run_with_stack;
+use rnix::SyntaxKind;
 use rnix::SyntaxKind::*;
 use rnix::TextRange;
+use rnix::TextSize;
 use rowan::ast::AstNode;
 
 struct Rng(u32);
@@ -32,6 +36,7 @@ impl Rng {
 /// A node or token of rnix's syntax tree.
 struct Element {
     range: TextRange,
+    kind: SyntaxKind,
     /// Whether it is an expression that any other may replace: not, say,
     /// an attribute name or a function's parameter.
     expr: bool,
@@ -46,6 +51,7 @@ fn elements(text: &str) -> Vec<Element> {
             .descendants_with_tokens()
             .map(|e| Element {
                 range: e.text_range(),
+                kind: e.kind(),
                 expr: rnix::ast::Expr::can_cast(e.kind())
                     && !e.parent().is_some_and(|p| {
                         matches!(
@@ -62,16 +68,12 @@ fn elements(text: &str) -> Vec<Element> {
     })
 }
 
-/// The range of an expression of `elements`, picked at random, or of all
-/// of the text when it has none.
-fn expr(elements: &[Element], rng: &mut Rng) -> TextRange {
-    let exprs: Vec<TextRange> = elements
-        .iter()
-        .filter(|e| e.expr)
-        .map(|e| e.range)
-        .collect();
+/// An expression of `elements`, picked at random, or the root, which spans
+/// all of the text, when it has none.
+fn expr<'a>(elements: &'a [Element], rng: &mut Rng) -> &'a Element {
+    let exprs: Vec<&Element> = elements.iter().filter(|e| e.expr).collect();
     if exprs.is_empty() {
-        elements[0].range
+        &elements[0]
     } else {
         exprs[rng.below(exprs.len())]
     }
@@ -100,26 +102,208 @@ const ERRORS: &[&str] = &[
     "(let x = x; in x)",
 ];
 
+/// Values the mutations bind, besides the input's own expressions.
+const VALUES: &[&str] = &[
+    "null",
+    "true",
+    "0",
+    "1.5",
+    "\"a\"",
+    "./.",
+    "[ ]",
+    "[ 1 \"a\" ]",
+    "{ }",
+    "{ a = 1; }",
+    "(x: x)",
+    "(a: b: a)",
+    "(a: b: a < b)",
+];
+
+/// Bindings Nix gives a meaning to in an attribute set, with `{}` standing
+/// for a value.
+const MAGIC: &[&str] = &[
+    "__functor = self: x: {};",
+    "__toString = self: {};",
+    "outPath = {};",
+    "type = \"derivation\";",
+    "__ignoreNulls = true;",
+    "__structuredAttrs = true;",
+    "outputHashMode = \"text\";",
+];
+
+/// Bindings of `__findFile`, which `<NAME>` calls, with `{}` standing for a
+/// value.
+const FIND_FILE: &[&str] = &[
+    "__findFile = builtins.findFile;",
+    "__findFile = path: name: [ path name ];",
+    "__findFile = _: _: {};",
+];
+
+/// Bindings of `__nixPath`, which `<NAME>` passes to `__findFile`, with
+/// `{}` standing for a value.
+const NIX_PATH: &[&str] = &[
+    "__nixPath = [ ];",
+    "__nixPath = [ { prefix = \"nixpkgs\"; path = ./.; } ];",
+    "__nixPath = [ { prefix = \"\"; path = \"/\"; } ];",
+    "__nixPath = {};",
+];
+
 fn splice(text: &str, range: TextRange, with: &str) -> String {
     let (start, end) = (usize::from(range.start()), usize::from(range.end()));
     [&text[..start], with, &text[end..]].concat()
 }
 
+/// The text of `e`, parenthesised unless it can stand as an argument as it
+/// is.
+fn argument(text: &str, e: &Element) -> String {
+    let s = &text[e.range];
+    let atom = matches!(
+        e.kind,
+        NODE_LITERAL
+            | NODE_STRING
+            | NODE_LIST
+            | NODE_ATTR_SET
+            | NODE_PAREN
+            | NODE_PATH_ABS
+            | NODE_PATH_HOME
+            | NODE_PATH_REL
+            | NODE_PATH_SEARCH
+    ) || (e.kind == NODE_IDENT && s != "or");
+    if atom { s.to_owned() } else { format!("({s})") }
+}
+
+/// An expression of `text` as an argument, or one of [`VALUES`].
+fn value(text: &str, elements: &[Element], rng: &mut Rng) -> String {
+    if rng.below(2) == 0 {
+        VALUES[rng.below(VALUES.len())].to_owned()
+    } else {
+        argument(text, expr(elements, rng))
+    }
+}
+
+/// An attribute set of the text.
+struct AttrSet {
+    range: TextRange,
+    rec: Option<TextRange>,
+    /// Where its bindings start, just after its `{`.
+    open: TextSize,
+    /// The attribute paths within it.
+    names: Vec<TextRange>,
+}
+
+fn attr_sets(elements: &[Element]) -> Vec<AttrSet> {
+    elements
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| e.kind == NODE_ATTR_SET)
+        .filter_map(|(i, set)| {
+            let (mut rec, mut open, mut names) = (None, None, Vec::new());
+            for e in elements[i + 1..]
+                .iter()
+                .take_while(|e| set.range.contains_range(e.range))
+            {
+                match e.kind {
+                    TOKEN_REC if open.is_none() => rec = Some(e.range),
+                    TOKEN_L_BRACE if open.is_none() => open = Some(e.range.end()),
+                    NODE_ATTRPATH => names.push(e.range),
+                    _ => {}
+                }
+            }
+            Some(AttrSet {
+                range: set.range,
+                rec,
+                open: open?,
+                names,
+            })
+        })
+        .collect()
+}
+
 /// Replace an expression of `text` with one that fails.
 fn inject_error(text: &str, elements: &[Element], rng: &mut Rng) -> String {
-    let at = expr(elements, rng);
+    let at = expr(elements, rng).range;
     splice(text, at, ERRORS[rng.below(ERRORS.len())])
 }
 
+/// Add one of [`MAGIC`] to an attribute set of `text`, or `__overrides` of
+/// one of its attributes, making the set `rec`. With no set, replace an
+/// expression with a set of one of [`MAGIC`].
+fn add_magic(text: &str, elements: &[Element], rng: &mut Rng) -> String {
+    let sets = attr_sets(elements);
+    let value = value(text, elements, rng);
+    let pick = rng.below(MAGIC.len() + 1);
+    if sets.is_empty() {
+        let binding = MAGIC[pick % MAGIC.len()].replace("{}", &value);
+        return splice(text, expr(elements, rng).range, &format!("{{ {binding} }}"));
+    }
+    let set = &sets[rng.below(sets.len())];
+    let at = TextRange::empty(set.open);
+    if let Some(magic) = MAGIC.get(pick) {
+        return splice(text, at, &format!(" {}", magic.replace("{}", &value)));
+    }
+    let name = if set.names.is_empty() {
+        "a"
+    } else {
+        &text[set.names[rng.below(set.names.len())]]
+    };
+    let out = splice(
+        text,
+        at,
+        &format!(" __overrides = {{ {name} = {value}; }};"),
+    );
+    match set.rec {
+        Some(_) => out,
+        None => splice(&out, TextRange::empty(set.range.start()), "rec "),
+    }
+}
+
+/// Make an attribute set of `text` `rec` or not, or add one of [`MAGIC`]
+/// when it has none.
+fn toggle_rec(text: &str, elements: &[Element], rng: &mut Rng) -> String {
+    let sets = attr_sets(elements);
+    if sets.is_empty() {
+        return add_magic(text, elements, rng);
+    }
+    let set = &sets[rng.below(sets.len())];
+    match set.rec {
+        Some(rec) => splice(text, rec, ""),
+        None => splice(text, TextRange::empty(set.range.start()), "rec "),
+    }
+}
+
+/// Replace an expression of `text` with a `let` that binds `__findFile`,
+/// `__nixPath` or both around it, and around a `<nixpkgs>` alongside it
+/// half the time.
+fn wrap_find_file(text: &str, elements: &[Element], rng: &mut Rng) -> String {
+    let target = expr(elements, rng);
+    let which = rng.below(3);
+    let mut bindings = Vec::new();
+    if which != 0 {
+        let value = value(text, elements, rng);
+        bindings.push(FIND_FILE[rng.below(FIND_FILE.len())].replace("{}", &value));
+    }
+    if which != 1 {
+        let value = value(text, elements, rng);
+        bindings.push(NIX_PATH[rng.below(NIX_PATH.len())].replace("{}", &value));
+    }
+    let body = if rng.below(2) == 0 {
+        text[target.range].to_owned()
+    } else {
+        format!("[ {} <nixpkgs> ]", argument(text, target))
+    };
+    let wrapped = format!("(let {} in {body})", bindings.join(" "));
+    splice(text, target.range, &wrapped)
+}
+
 /// Replace, delete, copy or swap whole nodes and tokens of `text`, insert a
-/// keyword or operator after one, or replace an expression with one that
-/// fails.
+/// keyword or operator after one, or edit an expression or attribute set
+/// in one of the ways above.
 fn mutate_tree(text: &str, rng: &mut Rng) -> String {
     let elements = elements(text);
     let a = elements[rng.below(elements.len())].range;
     let b = elements[rng.below(elements.len())].range;
     let piece = &text[b];
-    match rng.below(6) {
+    match rng.below(9) {
         0 => splice(text, a, piece),
         1 => splice(text, a, ""),
         2 => splice(text, TextRange::empty(a.end()), &format!(" {piece}")),
@@ -146,7 +330,10 @@ fn mutate_tree(text: &str, rng: &mut Rng) -> String {
             ]
             .concat()
         }
-        _ => inject_error(text, &elements, rng),
+        5 => inject_error(text, &elements, rng),
+        6 => add_magic(text, &elements, rng),
+        7 => toggle_rec(text, &elements, rng),
+        _ => wrap_find_file(text, &elements, rng),
     }
 }
 
@@ -199,7 +386,7 @@ pub fn crossover(data1: &[u8], data2: &[u8], out: &mut [u8], seed: u32) -> usize
             let into = elements(&a[to.clone()]);
             let from = elements(b);
             let piece = &b[from[rng.below(from.len())].range];
-            let at = into[rng.below(into.len())].range + rnix::TextSize::from(to.start as u32);
+            let at = into[rng.below(into.len())].range + TextSize::from(to.start as u32);
             splice(a, at, piece).into_bytes()
         }
         None => {
@@ -236,14 +423,19 @@ mod tests {
     ];
 
     /// Every output of `mutation` on [`VALID`] over a few seeds, checking
-    /// that each still parses.
+    /// that each still parses. The seeds are spread out, as the first draws
+    /// from small ones are alike.
     fn valid_outputs(mutation: fn(&str, &[Element], &mut Rng) -> String) -> Vec<String> {
         let mut outs = Vec::new();
         for input in VALID {
             assert!(rnix::Root::parse(input).errors().is_empty(), "{input:?}");
             let elements = elements(input);
-            for seed in 0..200 {
-                let out = mutation(input, &elements, &mut Rng::new(seed));
+            for seed in 0..200u32 {
+                let out = mutation(
+                    input,
+                    &elements,
+                    &mut Rng::new(seed.wrapping_mul(0x9e37_79b9)),
+                );
                 let errors = rnix::Root::parse(&out).errors().to_vec();
                 assert!(errors.is_empty(), "{input:?} -> {out:?}: {errors:?}");
                 outs.push(out);
@@ -257,6 +449,41 @@ mod tests {
         let outs = valid_outputs(inject_error);
         for error in ERRORS {
             assert!(outs.iter().any(|o| o.contains(error)), "never {error}");
+        }
+    }
+
+    #[test]
+    fn magic_attributes_parse() {
+        let outs = valid_outputs(add_magic);
+        for magic in MAGIC {
+            let name = magic.split(" = ").next().unwrap();
+            assert!(outs.iter().any(|o| o.contains(name)), "never {name}");
+        }
+        let overrides: Vec<_> = outs.iter().filter(|o| o.contains("__overrides")).collect();
+        assert!(!overrides.is_empty());
+        assert!(
+            overrides.iter().all(|o| o.contains("rec ")),
+            "{overrides:?}"
+        );
+    }
+
+    #[test]
+    fn rec_toggles() {
+        valid_outputs(toggle_rec);
+        let toggle = |s: &str| toggle_rec(s, &elements(s), &mut Rng::new(1));
+        assert_eq!(toggle("{ a = 1; }"), "rec { a = 1; }");
+        assert_eq!(toggle("rec { a = 1; }"), " { a = 1; }");
+    }
+
+    #[test]
+    fn find_file_bindings_parse() {
+        let outs = valid_outputs(wrap_find_file);
+        for binding in [FIND_FILE, NIX_PATH].concat() {
+            let name = binding.replace("{}", "");
+            assert!(
+                outs.iter().any(|o| o.contains(name.trim_end_matches(';'))),
+                "never {binding}"
+            );
         }
     }
 
