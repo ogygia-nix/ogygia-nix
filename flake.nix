@@ -290,9 +290,17 @@
               meta.mainProgram = "ogygia-nix-eval";
             });
 
+            # The test profile both test derivations build with. They must agree,
+            # or the archive rebuilds every dependency. Line tables keep file and
+            # line numbers in backtraces but drop the rest of the debug info,
+            # which was most of the archive.
+            testProfileArgs = {
+              CARGO_PROFILE_TEST_DEBUG = "line-tables-only";
+            };
+
             # cargo nextest archive builds with the test profile, so its
             # dependencies are cached separately from the release ones.
-            testCargoArtifacts = craneLib.buildDepsOnly (commonArgs // {
+            testCargoArtifacts = craneLib.buildDepsOnly (commonArgs // testProfileArgs // {
               pname = "ogygia-test-deps";
               version = "git";
               CARGO_PROFILE = "test";
@@ -302,7 +310,7 @@
               buildPhaseCargoCommand = "";
             });
 
-            ogygia-nextest-archive = craneLib.buildPackage (commonArgs // {
+            ogygia-nextest-archive = craneLib.buildPackage (commonArgs // testProfileArgs // {
               pname = "ogygia-nextest-archive";
               inherit version;
               cargoArtifacts = testCargoArtifacts;
