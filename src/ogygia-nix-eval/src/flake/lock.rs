@@ -5,7 +5,6 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 
 use crate::eval::Eval;
-use crate::flake::file::InputSpec;
 use crate::flake::flakeref;
 use crate::flake::flakeref::Attr;
 use crate::flake::flakeref::Attrs;
@@ -93,20 +92,40 @@ impl Lock {
         Ok(key)
     }
 
-    /// Whether this already locks `inputs`, the inputs of its root as
-    /// `flake.nix` declares them, so that evaluating needs no change to it.
-    /// An input whose reference is unchanged keeps its locked inputs, so
-    /// only overrides of them are compared.
-    pub fn locks(&self, inputs: &BTreeMap<String, InputSpec>) -> bool {
-        self.node(&self.root).is_ok_and(|(_, root)| {
-            inputs.len() == root.inputs.len()
-                && inputs
-                    .iter()
-                    .all(|(name, spec)| match root.inputs.get(name) {
-                        Some(edge) => self.locks_input(spec, edge),
-                        None => false,
-                    })
-        })
+    /// Whether this locks the same inputs to the same sources as `other`,
+    /// whatever the keys of their nodes: inputs that lead to one node in
+    /// one must lead to one node in the other. The root's own source is not
+    /// compared.
+    pub fn same(&self, other: &Lock) -> bool {
+        let mut ours = HashMap::new();
+        let mut theirs = HashMap::new();
+        let mut pending = vec![(self.root.as_str(), other.root.as_str())];
+        while let Some((a, b)) = pending.pop() {
+            match (ours.insert(a, b), theirs.insert(b, a)) {
+                (None, None) => {}
+                (Some(x), Some(y)) if x == b && y == a => continue,
+                _ => return false,
+            }
+            let (Ok((_, n)), Ok((_, m))) = (self.node(a), other.node(b)) else {
+                return false;
+            };
+            let same_source = a == self.root
+                || (n.locked == m.locked
+                    && n.original == m.original
+                    && n.flake == m.flake
+                    && n.parent == m.parent);
+            if !same_source || n.inputs.len() != m.inputs.len() {
+                return false;
+            }
+            for (name, e) in &n.inputs {
+                match (e, m.inputs.get(name)) {
+                    (Edge::Follows(p), Some(Edge::Follows(q))) if p == q => {}
+                    (Edge::Node(x), Some(Edge::Node(y))) => pending.push((x, y)),
+                    _ => return false,
+                }
+            }
+        }
+        true
     }
 
     /// Whether some input is not locked to a fixed source, as a local Git
@@ -150,27 +169,6 @@ impl Lock {
             }));
         }
         Ok(())
-    }
-
-    fn locks_input(&self, spec: &InputSpec, edge: &Edge) -> bool {
-        match (&spec.follows, edge) {
-            (Some(want), Edge::Follows(path)) => want == path,
-            (None, Edge::Node(key)) => {
-                let Ok((_, node)) = self.node(key) else {
-                    return false;
-                };
-                let same = spec
-                    .attrs
-                    .as_ref()
-                    .is_none_or(|a| node.original.as_ref() == Some(a));
-                // Overrides of inputs the node does not have change nothing.
-                same && spec
-                    .overrides
-                    .iter()
-                    .all(|(name, s)| node.inputs.get(name).is_none_or(|e| self.locks_input(s, e)))
-            }
-            _ => false,
-        }
     }
 }
 
