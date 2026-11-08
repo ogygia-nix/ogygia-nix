@@ -727,7 +727,7 @@ impl<'a> Eval<'a> {
                     return self.coerce_into(r, c, buf, ctx);
                 }
                 if let Some(out) = a.get(s.out_path) {
-                    return self.coerce_level(out, c, buf, ctx);
+                    return self.coerce_into(self.force(out)?, c, buf, ctx);
                 }
                 return type_err(format!(
                     "cannot coerce a set to a string: {}",
@@ -795,6 +795,7 @@ impl<'a> Eval<'a> {
                     None => a.get(s.out_path),
                 };
                 if let Some(inner) = inner {
+                    let inner = self.force(inner)?;
                     return self.deeper(|| self.coerce_to_path_realising(inner, realise));
                 }
             }

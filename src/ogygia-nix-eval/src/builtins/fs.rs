@@ -81,8 +81,8 @@ pub fn read_file_type<'a>(ev: &Eval<'a>, path: Value<'a>) -> R<'a> {
 
 pub fn path_exists<'a>(ev: &Eval<'a>, path: Value<'a>) -> R<'a> {
     let v = ev.force(path)?;
-    let (raw, _) = ev.coerce_to_string(v, Coerce::PLAIN)?;
     let path = ev.realise_path(v)?;
+    let (raw, _) = ev.coerce_to_string(v, Coerce::PLAIN)?;
     let io = &ev.ctx.io;
     // A trailing `/` or `/.` requires a directory.
     let exists = if (raw.ends_with(b"/") || raw.ends_with(b"/.")) && path != "/" {
