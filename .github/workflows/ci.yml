@@ -310,6 +310,7 @@ jobs:
   macos-app-release:
     needs: [apple-gate, apple-apps]
     if: >-
+      !cancelled() && needs.apple-apps.result == 'success' &&
       github.event_name == 'push' && github.ref == 'refs/heads/main' &&
       needs.apple-gate.outputs.macos == 'true'
     runs-on: ${{ needs.apple-gate.outputs.runner }}
@@ -532,6 +533,7 @@ jobs:
   ios-app-release:
     needs: [apple-gate, apple-apps]
     if: >-
+      !cancelled() && needs.apple-apps.result == 'success' &&
       github.event_name == 'push' && github.ref == 'refs/heads/main' &&
       needs.apple-gate.outputs.ios == 'true'
     runs-on: ${{ needs.apple-gate.outputs.runner }}
