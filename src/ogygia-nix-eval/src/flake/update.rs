@@ -16,7 +16,6 @@ use crate::flake::flake_dir;
 use crate::flake::flakeref;
 use crate::flake::flakeref::Attr;
 use crate::flake::flakeref::Attrs;
-use crate::flake::locate_locked;
 use crate::flake::lock::Edge;
 use crate::flake::lock::Lock;
 use crate::flake::lock::Node;
@@ -247,10 +246,10 @@ impl<'a> Locker<'_, 'a> {
         let Some(locked) = node.locked.clone() else {
             return eval_err(format!("lock file node '{k}' is not locked"));
         };
-        let parent = node.parent.clone();
-        let located = locate_locked(self.ev, self.env, &locked, parent.as_deref(), |parent| {
-            self.locate(parent)
-        })?;
+        let located = match (flakeref::relative_path(&locked), node.parent.clone()) {
+            (Some(rel), Some(parent)) => relative(&self.locate(&parent)?, rel, &locked)?,
+            _ => fetch_flake(self.ev, self.env, &locked)?.resolved(),
+        };
         self.located.insert(k, located.clone());
         Ok(located)
     }
@@ -267,25 +266,17 @@ impl<'a> Locker<'_, 'a> {
         }
         let mut locked = attrs.clone();
         let (located, parent) = match flakeref::relative_path(&attrs) {
-            // Within the flake declaring it, and from the same source, of
-            // which it knows nothing more, though its node names the flake
+            // Within the flake declaring it, though its node names the flake
             // whose input it is.
-            Some(rel) => {
-                let base = &self.located[&key(decl)];
-                let located = Located {
-                    dir: flake_dir(&r(within(&base.source.path, &base.dir, rel))?, &attrs),
-                    source: Source {
-                        path: base.source.path.clone(),
-                        info: Info::default(),
-                    },
-                };
-                (located, Some(path[..path.len() - 1].to_vec()))
-            }
+            Some(rel) => (
+                relative(&self.located[&key(decl)], rel, &attrs)?,
+                Some(path[..path.len() - 1].to_vec()),
+            ),
             None => {
                 if let Some(rev) = r(source::locked_rev(&locked))? {
                     locked.insert("rev".to_owned(), Attr::Str(rev));
                 }
-                (fetch_flake(self.ev, self.env, &locked)?, None)
+                (fetch_flake(self.ev, self.env, &locked)?.resolved(), None)
             }
         };
         let shown = flakeref::to_string(&locked);
@@ -318,6 +309,20 @@ impl<'a> Locker<'_, 'a> {
         self.fetching.pop();
         locked
     }
+}
+
+/// The flake `attrs` at `rel` from the flake at `base`, as Nix has it while
+/// locking: within the same source, of which it knows nothing more.
+fn relative<'a>(base: &Located, rel: &str, attrs: &Attrs) -> R<'a, Located> {
+    let dir = r(within(&base.source.path, &base.dir, rel))?;
+    Ok(Located {
+        dir: flake_dir(&dir, attrs),
+        source: Source {
+            path: base.source.path.clone(),
+            info: Info::default(),
+        },
+    }
+    .resolved())
 }
 
 /// The directory `rel` leads to from `dir`, within the source at `root`.

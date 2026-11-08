@@ -63,6 +63,17 @@ struct Located {
     dir: String,
 }
 
+impl Located {
+    /// This location with `.` and `..` in its directory resolved, as Nix has
+    /// it for a flake it fetches while locking.
+    fn resolved(self) -> Located {
+        Located {
+            dir: crate::path::canon_path(&self.dir),
+            ..self
+        }
+    }
+}
+
 fn r<'a, T>(e: anyhow::Result<T>) -> R<'a, T> {
     e.map_err(anyhow_err)
 }
@@ -390,7 +401,7 @@ pub(crate) fn eval_json<'a>(
     };
     let attrs = r(installable_ref(flake, &env.cwd))?;
     let shown = flakeref::to_string(&attrs);
-    let located = fetch_flake(ev, env, &attrs)?;
+    let located = fetch_flake(ev, env, &attrs)?.resolved();
     let loaded = file::load(ev, &located.dir, &shown)?;
     let lock = read_lock(ev, &located.dir)?;
     lock.check_locked()?;

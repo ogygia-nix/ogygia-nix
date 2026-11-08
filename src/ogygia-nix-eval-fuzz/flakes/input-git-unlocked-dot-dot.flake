@@ -1,0 +1,25 @@
+#~flake path:@dir(root)#v
+#~tree root path
+#~file flake.nix
+{ inputs.s.url = "path:./zz/../b"; inputs.o.url = "path:@dir(o)?dir=zz/../b"; inputs.r.url = "path:./b?dir=zz/../c"; inputs.gd.url = "git+file://@dir(gd)"; outputs = { self, s, o, r, ... }: { v = [ s.v o.v r.outPath ]; }; }
+#~file b/flake.nix
+{ inputs.c.url = "path:./c"; outputs = { self, c }: { v = [ self.outPath (builtins.attrNames self.sourceInfo) c.outPath ]; }; }
+#~file b/c/flake.nix
+{ outputs = { self }: { }; }
+#~file flake.lock
+{
+  "nodes": {
+    "s": { "inputs": { "c": [ "gd" ] }, "locked": { "path": "./zz/../b", "type": "path" }, "original": { "path": "./zz/../b", "type": "path" }, "parent": [ ] },
+    "root": { "inputs": { "s": "s" } }
+  },
+  "root": "root",
+  "version": 7
+}
+#~tree o path
+#~file b/flake.nix
+{ outputs = { self }: { v = self.outPath; }; }
+#~tree gd git
+#~file flake.nix
+{ outputs = { self }: { }; }
+#~file x staged
+y
