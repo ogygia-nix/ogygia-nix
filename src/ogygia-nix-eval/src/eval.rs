@@ -784,8 +784,21 @@ impl<'a> Eval<'a> {
 
     fn coerce_to_path_realising(&self, v: Value<'a>, realise: bool) -> R<'a, String> {
         let v = self.force(v)?;
-        if let Value::Path(p) = v {
-            return Ok(p.0.to_owned());
+        match v {
+            Value::Path(p) => return Ok(p.0.to_owned()),
+            // A set stands for what it coerces to, so a path it gives keeps
+            // the filesystem it belongs to rather than becoming a string.
+            Value::Attrs(a) => {
+                let s = &self.ctx.syms;
+                let inner = match a.get(s.to_string) {
+                    Some(f) => Some(self.call(f, &[v], None)?),
+                    None => a.get(s.out_path),
+                };
+                if let Some(inner) = inner {
+                    return self.deeper(|| self.coerce_to_path_realising(inner, realise));
+                }
+            }
+            _ => {}
         }
         let (buf, ctx) = self.coerce_to_string(v, Coerce::PLAIN)?;
         if realise {
