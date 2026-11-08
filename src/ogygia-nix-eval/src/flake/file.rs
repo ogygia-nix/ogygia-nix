@@ -203,9 +203,10 @@ fn indirect(id: &str) -> Attrs {
 }
 
 /// Load the `flake.nix` in the logical directory `dir` of the flake shown
-/// as `shown`.
+/// as `shown`. Any `.` and `..` in `dir` are resolved without consulting
+/// the filesystem.
 pub fn load<'a>(ev: &Eval<'a>, dir: &str, shown: &str) -> R<'a, Flake<'a>> {
-    let file = format!("{}/flake.nix", dir.trim_end_matches('/'));
+    let file = format!("{}/flake.nix", crate::path::canon_path(dir));
     if !ev.ctx.io.exists(&file).map_err(anyhow_err)? {
         return eval_err(format!(
             "source tree referenced by '{shown}' does not contain a '/flake.nix' file"

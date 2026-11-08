@@ -1,0 +1,10 @@
+#~flake path:@dir(root)#v
+#~lock
+#~tree root path
+#~file flake.nix
+{ inputs.s.url = "path:./zz/../b"; inputs.o.url = "path:@dir(o)?dir=zz/../b"; outputs = { self, s, o }: { v = [ s.v s.outPath o.v o.outPath ]; }; }
+#~file b/flake.nix
+{ outputs = { self }: { v = "b"; }; }
+#~tree o path
+#~file b/flake.nix
+{ outputs = { self }: { v = "o"; }; }
