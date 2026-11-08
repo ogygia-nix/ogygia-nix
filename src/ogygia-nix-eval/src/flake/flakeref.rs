@@ -50,6 +50,15 @@ pub fn get_int(attrs: &Attrs, name: &str) -> Option<u64> {
     }
 }
 
+/// The path of a reference to a directory relative to the flake declaring
+/// it.
+pub fn relative_path(attrs: &Attrs) -> Option<&str> {
+    match (get_str(attrs, "type"), get_str(attrs, "path")) {
+        (Some("path"), Some(p)) if !p.starts_with('/') => Some(p),
+        _ => None,
+    }
+}
+
 pub(crate) fn percent_decode(s: &str) -> Result<String> {
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());

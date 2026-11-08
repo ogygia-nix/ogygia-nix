@@ -77,35 +77,9 @@ impl<'a> Flakes<'a> {
         let Some(locked) = &node.locked else {
             return eval_err(format!("lock file node '{key}' is not locked"));
         };
-        let relative = match (
-            flakeref::get_str(locked, "type"),
-            flakeref::get_str(locked, "path"),
-        ) {
-            (Some("path"), Some(p)) if !p.starts_with('/') => Some(p),
-            _ => None,
-        };
-        let located = match (relative, &node.parent) {
-            // Within the flake it is relative to, and from the same source.
-            (Some(rel), Some(parent)) => {
-                let parent = self.locate(ev, self.lock.resolve(parent)?)?;
-                Located {
-                    source: parent.source,
-                    dir: format!("{}/{rel}", parent.dir),
-                }
-            }
-            _ => {
-                let what = flakeref::to_string(locked);
-                let source = r(source::fetch(&ev.ctx.io, self.env, locked, &what))?;
-                Located {
-                    dir: source.path.clone(),
-                    source,
-                }
-            }
-        };
-        let located = Located {
-            dir: flake_dir(&located.dir, locked),
-            ..located
-        };
+        let located = locate_locked(ev, self.env, locked, node.parent.as_deref(), |parent| {
+            self.locate(ev, self.lock.resolve(parent)?)
+        })?;
         self.sources.borrow_mut().insert(key, located.clone());
         Ok(located)
     }
@@ -199,6 +173,39 @@ fn read_lock<'a>(ev: &Eval<'a>, dir: &str) -> R<'a, Lock> {
     let text = r(ev.ctx.io.read(&lock_file))?;
     let json = crate::builtins::json::from_json(ev, ev.str_val(&text, &[]))?;
     lock::from_value(ev, json)
+}
+
+/// The flake `attrs` refers to, fetched.
+fn fetch_flake<'a>(ev: &Eval<'a>, env: &FlakeEnv, attrs: &Attrs) -> R<'a, Located> {
+    let what = flakeref::to_string(attrs);
+    let source = r(source::fetch(&ev.ctx.io, env, attrs, &what))?;
+    Ok(Located {
+        dir: flake_dir(&source.path, attrs),
+        source,
+    })
+}
+
+/// The flake a lock file node locks to `locked`: within the flake
+/// `locate_parent` gives for its `parent` if its path is relative to that,
+/// and fetched otherwise.
+fn locate_locked<'a>(
+    ev: &Eval<'a>,
+    env: &FlakeEnv,
+    locked: &Attrs,
+    parent: Option<&[String]>,
+    locate_parent: impl FnOnce(&[String]) -> R<'a, Located>,
+) -> R<'a, Located> {
+    match (flakeref::relative_path(locked), parent) {
+        // Within the flake it is relative to, and from the same source.
+        (Some(rel), Some(parent)) => {
+            let parent = locate_parent(parent)?;
+            Ok(Located {
+                dir: flake_dir(&format!("{}/{rel}", parent.dir), locked),
+                source: parent.source,
+            })
+        }
+        _ => fetch_flake(ev, env, locked),
+    }
 }
 
 /// The directory of the flake `attrs` refers to, in `base`, the directory
@@ -383,12 +390,10 @@ pub(crate) fn eval_json<'a>(
     };
     let attrs = r(installable_ref(flake, &env.cwd))?;
     let shown = flakeref::to_string(&attrs);
-    let source = r(source::fetch(&ev.ctx.io, env, &attrs, &shown))?;
-    let dir = flake_dir(&source.path, &attrs);
-    let loaded = file::load(ev, &dir, &shown)?;
-    let lock = read_lock(ev, &dir)?;
+    let located = fetch_flake(ev, env, &attrs)?;
+    let loaded = file::load(ev, &located.dir, &shown)?;
+    let lock = read_lock(ev, &located.dir)?;
     lock.check_locked()?;
-    let located = Located { source, dir };
     // Nix locks the inputs anew, and goes on without writing the lock file
     // if that changes nothing or leaves some unlocked.
     let (new, located) = update::lock(ev, env, &lock, located, &loaded.inputs)?;

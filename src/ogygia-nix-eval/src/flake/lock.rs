@@ -32,6 +32,27 @@ pub struct Node {
     pub parent: Option<Vec<String>>,
 }
 
+impl Node {
+    /// The root node of a lock file, with inputs `inputs`.
+    pub fn root(inputs: BTreeMap<String, Edge>) -> Node {
+        Node {
+            inputs,
+            locked: None,
+            original: None,
+            flake: true,
+            parent: None,
+        }
+    }
+
+    /// The keys of the nodes its inputs lead to without following another.
+    fn children(&self) -> impl Iterator<Item = &str> {
+        self.inputs.values().filter_map(|e| match e {
+            Edge::Node(k) => Some(k.as_str()),
+            Edge::Follows(_) => None,
+        })
+    }
+}
+
 pub struct Lock {
     pub root: String,
     pub nodes: HashMap<String, Node>,
@@ -42,7 +63,7 @@ impl Lock {
     pub fn empty() -> Lock {
         Lock {
             root: "root".to_owned(),
-            nodes: HashMap::from([("root".to_owned(), root_node(BTreeMap::new()))]),
+            nodes: HashMap::from([("root".to_owned(), Node::root(BTreeMap::new()))]),
         }
     }
 
@@ -106,7 +127,7 @@ impl Lock {
                 (Some(x), Some(y)) if x == b && y == a => continue,
                 _ => return false,
             }
-            let (Ok((_, n)), Ok((_, m))) = (self.node(a), other.node(b)) else {
+            let (Some(n), Some(m)) = (self.nodes.get(a), other.nodes.get(b)) else {
                 return false;
             };
             let same_source = a == self.root
@@ -151,11 +172,12 @@ impl Lock {
             }
             let (_, node) = self.node(key)?;
             if let Some(l) = &node.locked {
-                let ty = flakeref::get_str(l, "type");
                 let rev = l.contains_key("rev")
-                    && matches!(ty, Some("git" | "github" | "gitlab" | "sourcehut"));
-                let relative = ty == Some("path")
-                    && flakeref::get_str(l, "path").is_some_and(|p| !p.starts_with('/'));
+                    && matches!(
+                        flakeref::get_str(l, "type"),
+                        Some("git" | "github" | "gitlab" | "sourcehut")
+                    );
+                let relative = flakeref::relative_path(l).is_some();
                 if !(l.contains_key("narHash") || rev || relative) {
                     return eval_err(format!(
                         "Lock file contains unlocked input '{}'. Use '--allow-dirty-locks' to accept this lock file.",
@@ -163,10 +185,7 @@ impl Lock {
                     ));
                 }
             }
-            pending.extend(node.inputs.values().filter_map(|e| match e {
-                Edge::Node(k) => Some(k.as_str()),
-                Edge::Follows(_) => None,
-            }));
+            pending.extend(node.children());
         }
         Ok(())
     }
@@ -231,29 +250,16 @@ pub fn from_value<'a>(ev: &Eval<'a>, v: Value<'a>) -> R<'a, Lock> {
         };
         let node = if key == root {
             match ev.force(v)? {
-                Value::Attrs(n) => root_node(inputs(ev, n)?),
-                _ => root_node(BTreeMap::new()),
+                Value::Attrs(n) => Node::root(inputs(ev, n)?),
+                _ => Node::root(BTreeMap::new()),
             }
         } else {
             node(ev, ev.force_attrs(v)?)?
         };
-        pending.extend(node.inputs.values().filter_map(|e| match e {
-            Edge::Node(k) => Some(k.clone()),
-            Edge::Follows(_) => None,
-        }));
+        pending.extend(node.children().map(str::to_owned));
         nodes.insert(key, node);
     }
     Ok(Lock { root, nodes })
-}
-
-fn root_node(inputs: BTreeMap<String, Edge>) -> Node {
-    Node {
-        inputs,
-        locked: None,
-        original: None,
-        flake: true,
-        parent: None,
-    }
 }
 
 fn inputs<'a>(ev: &Eval<'a>, n: &crate::value::Attrs<'a>) -> R<'a, BTreeMap<String, Edge>> {

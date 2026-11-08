@@ -9,12 +9,14 @@ use std::collections::HashMap;
 use crate::eval::Eval;
 use crate::flake::FlakeEnv;
 use crate::flake::Located;
+use crate::flake::fetch_flake;
 use crate::flake::file;
 use crate::flake::file::InputSpec;
 use crate::flake::flake_dir;
 use crate::flake::flakeref;
 use crate::flake::flakeref::Attr;
 use crate::flake::flakeref::Attrs;
+use crate::flake::locate_locked;
 use crate::flake::lock::Edge;
 use crate::flake::lock::Lock;
 use crate::flake::lock::Node;
@@ -73,18 +75,6 @@ fn child(path: &[String], name: &str) -> Vec<String> {
     p
 }
 
-/// The path of a reference to a directory relative to the flake declaring
-/// it.
-fn relative(attrs: &Attrs) -> Option<&str> {
-    match (
-        flakeref::get_str(attrs, "type"),
-        flakeref::get_str(attrs, "path"),
-    ) {
-        (Some("path"), Some(p)) if !p.starts_with('/') => Some(p),
-        _ => None,
-    }
-}
-
 impl<'a> Locker<'_, 'a> {
     fn register(&mut self, decl: &[String], path: Vec<String>, spec: &InputSpec) {
         for (name, o) in &spec.overrides {
@@ -128,18 +118,15 @@ impl<'a> Locker<'_, 'a> {
         path: &[String],
         inputs: &BTreeMap<String, InputSpec>,
         decl: &[String],
-        old: Option<Old<'_>>,
+        old: Old<'_>,
     ) -> R<'a, ()> {
         for (name, spec) in inputs {
             self.register(decl, child(path, name), spec);
         }
+        let old_inputs = old.lock.nodes.get(old.key).map(|n| &n.inputs);
         let mut edges = BTreeMap::new();
         for (name, spec) in inputs {
             let p = child(path, name);
-            let old_child = old.and_then(|o| match o.lock.nodes.get(o.key)?.inputs.get(name) {
-                Some(Edge::Node(k)) => Some(Old { key: k, ..o }),
-                _ => None,
-            });
             let Some(want) = self.want(&p, spec, decl) else {
                 continue;
             };
@@ -151,12 +138,16 @@ impl<'a> Locker<'_, 'a> {
                 Want::Ref { attrs, flake } => {
                     // A relative node is kept only if its parent is the
                     // node whose input it is.
-                    let parent = relative(&attrs).map(|_| path.to_vec());
-                    match old_child.and_then(|o| Some((o, o.lock.nodes.get(o.key)?))) {
-                        Some((o, n))
+                    let parent = flakeref::relative_path(&attrs).map(|_| path.to_vec());
+                    let old_node = match old_inputs.and_then(|i| i.get(name)) {
+                        Some(Edge::Node(k)) => old.lock.nodes.get_key_value(k),
+                        _ => None,
+                    };
+                    match old_node {
+                        Some((k, n))
                             if n.original.as_ref() == Some(&attrs) && n.parent == parent =>
                         {
-                            self.reuse(&p, o)?
+                            self.reuse(&p, Old { key: k, ..old })?
                         }
                         _ => self.fetch(&p, attrs, flake, decl)?,
                     }
@@ -194,7 +185,6 @@ impl<'a> Locker<'_, 'a> {
         let stale = n.inputs.iter().any(|(name, edge)| {
             matches!(edge, Edge::Follows(_)) && self.overriding(&child(path, name)).is_none()
         });
-        let old = Old { key: k, ..old };
         self.keeping.push(k.to_owned());
         let locked = if !stale {
             self.keep_inputs(path, n, old)
@@ -228,7 +218,7 @@ impl<'a> Locker<'_, 'a> {
             };
             inputs.insert(name.clone(), spec);
         }
-        self.lock_inputs(path, &inputs, old.at, Some(old))
+        self.lock_inputs(path, &inputs, old.at, old)
     }
 
     /// Lock the inputs the `flake.nix` of the input at `path` declares,
@@ -241,7 +231,7 @@ impl<'a> Locker<'_, 'a> {
             .map(flakeref::to_string)
             .unwrap_or_default();
         let loaded = file::load(self.ev, &located.dir, &shown)?;
-        self.lock_inputs(path, &loaded.inputs, path, Some(old))
+        self.lock_inputs(path, &loaded.inputs, path, old)
     }
 
     /// Where the input at `path`, whose node is added, is: fetched from
@@ -257,27 +247,10 @@ impl<'a> Locker<'_, 'a> {
         let Some(locked) = node.locked.clone() else {
             return eval_err(format!("lock file node '{k}' is not locked"));
         };
-        let located = match (relative(&locked), node.parent.clone()) {
-            (Some(rel), Some(parent)) => {
-                let base = self.locate(&parent)?;
-                Located {
-                    dir: format!("{}/{rel}", base.dir),
-                    source: base.source,
-                }
-            }
-            _ => {
-                let what = flakeref::to_string(&locked);
-                let source = r(source::fetch(&self.ev.ctx.io, self.env, &locked, &what))?;
-                Located {
-                    dir: source.path.clone(),
-                    source,
-                }
-            }
-        };
-        let located = Located {
-            dir: flake_dir(&located.dir, &locked),
-            ..located
-        };
+        let parent = node.parent.clone();
+        let located = locate_locked(self.ev, self.env, &locked, parent.as_deref(), |parent| {
+            self.locate(parent)
+        })?;
         self.located.insert(k, located.clone());
         Ok(located)
     }
@@ -293,14 +266,14 @@ impl<'a> Locker<'_, 'a> {
             ));
         }
         let mut locked = attrs.clone();
-        let (located, parent) = match relative(&attrs) {
+        let (located, parent) = match flakeref::relative_path(&attrs) {
             // Within the flake declaring it, and from the same source, of
             // which it knows nothing more, though its node names the flake
             // whose input it is.
             Some(rel) => {
                 let base = &self.located[&key(decl)];
                 let located = Located {
-                    dir: r(within(&base.source.path, &base.dir, rel))?,
+                    dir: flake_dir(&r(within(&base.source.path, &base.dir, rel))?, &attrs),
                     source: Source {
                         path: base.source.path.clone(),
                         info: Info::default(),
@@ -312,18 +285,8 @@ impl<'a> Locker<'_, 'a> {
                 if let Some(rev) = r(source::locked_rev(&locked))? {
                     locked.insert("rev".to_owned(), Attr::Str(rev));
                 }
-                let what = flakeref::to_string(&locked);
-                let source = r(source::fetch(&self.ev.ctx.io, self.env, &locked, &what))?;
-                let located = Located {
-                    dir: source.path.clone(),
-                    source,
-                };
-                (located, None)
+                (fetch_flake(self.ev, self.env, &locked)?, None)
             }
-        };
-        let located = Located {
-            dir: flake_dir(&located.dir, &locked),
-            ..located
         };
         let shown = flakeref::to_string(&locked);
         self.nodes.insert(
@@ -350,7 +313,7 @@ impl<'a> Locker<'_, 'a> {
         };
         self.fetching.push(attrs);
         let keeping = std::mem::take(&mut self.keeping);
-        let locked = self.lock_inputs(path, &loaded.inputs, path, Some(old));
+        let locked = self.lock_inputs(path, &loaded.inputs, path, old);
         self.keeping = keeping;
         self.fetching.pop();
         locked
@@ -392,29 +355,19 @@ pub fn lock<'a>(
     let mut locker = Locker {
         ev,
         env,
-        nodes: HashMap::new(),
+        nodes: HashMap::from([(key(&[]), Node::root(BTreeMap::new()))]),
         overrides: HashMap::new(),
         located: HashMap::from([(key(&[]), root)]),
         follows: Vec::new(),
         fetching: Vec::new(),
         keeping: Vec::new(),
     };
-    locker.nodes.insert(
-        key(&[]),
-        Node {
-            inputs: BTreeMap::new(),
-            locked: None,
-            original: None,
-            flake: true,
-            parent: None,
-        },
-    );
     let old = Old {
         lock: old,
         key: &old.root,
         at: &[],
     };
-    locker.lock_inputs(&[], inputs, &[], Some(old))?;
+    locker.lock_inputs(&[], inputs, &[], old)?;
     let lock = Lock {
         root: key(&[]),
         nodes: locker.nodes,

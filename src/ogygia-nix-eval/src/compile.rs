@@ -1211,12 +1211,21 @@ impl<'a> Compiler<'a> {
         Ok(self.ctx.intern(tok.text()))
     }
 
-    fn preset(&mut self, entries: impl Iterator<Item = ast::Entry>) -> CResult<PreSet> {
+    fn preset(&self, entries: impl Iterator<Item = ast::Entry>) -> CResult<PreSet> {
         let mut set = PreSet::default();
-        for entry in entries {
-            self.merge_entry(&mut set, entry)?;
-        }
+        self.merge_entries(&mut set, entries)?;
         Ok(set)
+    }
+
+    fn merge_entries(
+        &self,
+        set: &mut PreSet,
+        entries: impl Iterator<Item = ast::Entry>,
+    ) -> CResult<()> {
+        for entry in entries {
+            self.merge_entry(set, entry)?;
+        }
+        Ok(())
     }
 
     fn merge_entry(&self, set: &mut PreSet, entry: ast::Entry) -> CResult<()> {
@@ -1292,15 +1301,10 @@ impl<'a> Compiler<'a> {
         // Two definitions merge only when both are attribute sets:
         // `a.b = 1; a.c = 2;` or `a = { b = 1; }; a.c = 2;`. The merged set
         // is `rec` exactly when the first definition is a `rec` literal.
-        if let Some(lit) = match existing {
-            PreAttr::Expr(e) => set_literal(e),
-            _ => None,
-        } {
-            let mut nested = PreSet::default();
-            for entry in lit.entries() {
-                self.merge_entry(&mut nested, entry)?;
-            }
-            *existing = PreAttr::Nested(nested, lit.rec_token().is_some());
+        if let PreAttr::Expr(e) = existing
+            && let Some(lit) = set_literal(e)
+        {
+            *existing = PreAttr::Nested(self.preset(lit.entries())?, lit.rec_token().is_some());
         }
         let PreAttr::Nested(nested, _) = existing else {
             return already();
@@ -1308,15 +1312,10 @@ impl<'a> Compiler<'a> {
         if !rest.is_empty() {
             return self.insert_path(nested, rest, value);
         }
-        match set_literal(&value) {
-            Some(lit) => {
-                for entry in lit.entries() {
-                    self.merge_entry(nested, entry)?;
-                }
-                Ok(())
-            }
-            None => already(),
-        }
+        let Some(lit) = set_literal(&value) else {
+            return already();
+        };
+        self.merge_entries(nested, lit.entries())
     }
 
     /// Compile a value of a set or `let`, other than an `inherit`.
