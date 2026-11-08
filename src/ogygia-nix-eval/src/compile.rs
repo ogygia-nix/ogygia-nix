@@ -278,6 +278,16 @@ fn intern_names(ctx: &Context, node: &rnix::SyntaxNode) {
     }
 }
 
+/// The attribute set literal `e` is, through any parentheses, which Nix's
+/// syntax tree does not keep.
+fn set_literal(e: &ast::Expr) -> Option<ast::AttrSet> {
+    match e {
+        ast::Expr::Paren(p) => set_literal(&p.expr()?),
+        ast::Expr::AttrSet(s) => Some(s.clone()),
+        _ => None,
+    }
+}
+
 /// The name of a `${...}` attribute that Nix treats as static: a string
 /// literal such as `${"lit"}`, `${(f:o)}` or `${''lit''}`, or an indented string
 /// whose only piece interpolates one, such as `${''${"lit"}''}`.
@@ -1282,7 +1292,10 @@ impl<'a> Compiler<'a> {
         // Two definitions merge only when both are attribute sets:
         // `a.b = 1; a.c = 2;` or `a = { b = 1; }; a.c = 2;`. The merged set
         // is `rec` exactly when the first definition is a `rec` literal.
-        if let PreAttr::Expr(ast::Expr::AttrSet(lit)) = existing {
+        if let Some(lit) = match existing {
+            PreAttr::Expr(e) => set_literal(e),
+            _ => None,
+        } {
             let mut nested = PreSet::default();
             for entry in lit.entries() {
                 self.merge_entry(&mut nested, entry)?;
@@ -1295,14 +1308,14 @@ impl<'a> Compiler<'a> {
         if !rest.is_empty() {
             return self.insert_path(nested, rest, value);
         }
-        match value {
-            ast::Expr::AttrSet(lit) => {
+        match set_literal(&value) {
+            Some(lit) => {
                 for entry in lit.entries() {
                     self.merge_entry(nested, entry)?;
                 }
                 Ok(())
             }
-            _ => already(),
+            None => already(),
         }
     }
 
