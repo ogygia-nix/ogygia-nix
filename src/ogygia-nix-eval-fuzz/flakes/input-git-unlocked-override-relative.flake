@@ -1,0 +1,16 @@
+#~flake path:@dir(root)#v
+#~tree root path
+#~file flake.nix
+{ inputs.dep.url = "path:@dir(dep)"; inputs.dep.inputs.x.url = "path:./y"; inputs.gd.url = "git+file://@dir(gd)"; outputs = { self, dep, ... }: { v = [ dep.v dep.inputs.x.outPath ]; }; }
+#~file y/flake.nix
+{ outputs = { self }: { v = "root-y"; }; }
+#~tree dep path
+#~file flake.nix
+{ inputs.x.url = "path:./y"; outputs = { self, x }: { v = x.v; }; }
+#~file y/flake.nix
+{ outputs = { self }: { v = "dep-y"; }; }
+#~tree gd git
+#~file flake.nix
+{ outputs = { self }: { }; }
+#~file x staged
+y

@@ -31,8 +31,13 @@ use crate::value::eval_err;
 enum Want {
     /// The input at this path from the root.
     Follows(Vec<String>),
-    /// The source this reference names.
-    Ref { attrs: Attrs, flake: bool },
+    /// The source this reference names, and the path of the flake whose
+    /// override names it, if one does.
+    Ref {
+        attrs: Attrs,
+        flake: bool,
+        over: Option<Vec<String>>,
+    },
 }
 
 /// A node of an old lock file: the root's, or that of an input fetched
@@ -96,7 +101,8 @@ impl<'a> Locker<'_, 'a> {
     /// What the input at `path` is: as `own`, declared by the flake at
     /// `decl`, says, unless an override says otherwise.
     fn want(&self, path: &[String], own: &InputSpec, decl: &[String]) -> Option<Want> {
-        let (spec, decl, flake) = match self.overriding(path) {
+        let over = self.overriding(path);
+        let (spec, decl, flake) = match over {
             Some((o, at)) => (o, at.as_slice(), o.flake.or(own.flake)),
             None => (own, decl, own.flake),
         };
@@ -106,6 +112,7 @@ impl<'a> Locker<'_, 'a> {
         spec.attrs.clone().map(|attrs| Want::Ref {
             attrs,
             flake: flake.unwrap_or(true),
+            over: over.map(|(_, at)| at.clone()),
         })
     }
 
@@ -134,10 +141,12 @@ impl<'a> Locker<'_, 'a> {
                     self.follows.push((p, target.clone()));
                     Edge::Follows(target)
                 }
-                Want::Ref { attrs, flake } => {
+                Want::Ref { attrs, flake, over } => {
                     // A relative node is kept only if its parent is the
-                    // node whose input it is.
-                    let parent = flakeref::relative_path(&attrs).map(|_| path.to_vec());
+                    // flake whose override names it, or else the node
+                    // whose input it is.
+                    let parent = flakeref::relative_path(&attrs)
+                        .map(|_| over.clone().unwrap_or_else(|| path.to_vec()));
                     let old_node = match old_inputs.and_then(|i| i.get(name)) {
                         Some(Edge::Node(k)) => old.lock.nodes.get_key_value(k),
                         _ => None,
@@ -148,7 +157,10 @@ impl<'a> Locker<'_, 'a> {
                         {
                             self.reuse(&p, Old { key: k, ..old })?
                         }
-                        _ => self.fetch(&p, attrs, flake, decl)?,
+                        _ => {
+                            let decl = over.as_deref().unwrap_or(decl);
+                            self.fetch(&p, attrs, flake, decl, parent)?
+                        }
                     }
                     Edge::Node(key(&p))
                 }
@@ -256,8 +268,16 @@ impl<'a> Locker<'_, 'a> {
 
     /// Fetch the input at `path` that `attrs`, from the flake at `decl`,
     /// refers to, and lock its inputs if it is a flake, reusing what its
-    /// own lock file locks.
-    fn fetch(&mut self, path: &[String], attrs: Attrs, flake: bool, decl: &[String]) -> R<'a, ()> {
+    /// own lock file locks. Its node names `parent` as the flake a relative
+    /// `attrs` is relative to.
+    fn fetch(
+        &mut self,
+        path: &[String],
+        attrs: Attrs,
+        flake: bool,
+        decl: &[String],
+        parent: Option<Vec<String>>,
+    ) -> R<'a, ()> {
         if flake && self.fetching.contains(&attrs) {
             return eval_err(format!(
                 "found circular import of flake '{}'",
@@ -265,18 +285,14 @@ impl<'a> Locker<'_, 'a> {
             ));
         }
         let mut locked = attrs.clone();
-        let (located, parent) = match flakeref::relative_path(&attrs) {
-            // Within the flake declaring it, though its node names the flake
-            // whose input it is.
-            Some(rel) => (
-                relative(&self.located[&key(decl)], rel, &attrs)?,
-                Some(path[..path.len() - 1].to_vec()),
-            ),
+        let located = match flakeref::relative_path(&attrs) {
+            // Within the flake declaring it.
+            Some(rel) => relative(&self.located[&key(decl)], rel, &attrs)?,
             None => {
                 if let Some(rev) = r(source::locked_rev(&locked))? {
                     locked.insert("rev".to_owned(), Attr::Str(rev));
                 }
-                (fetch_flake(self.ev, self.env, &locked)?.resolved(), None)
+                fetch_flake(self.ev, self.env, &locked)?.resolved()
             }
         };
         let shown = flakeref::to_string(&locked);
