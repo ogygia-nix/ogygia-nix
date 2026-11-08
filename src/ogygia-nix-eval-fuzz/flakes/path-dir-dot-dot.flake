@@ -1,0 +1,4 @@
+#~flake path:@dir(root)?dir=zz/../b#v
+#~tree root path
+#~file b/flake.nix
+{ outputs = { self }: { v = self.outPath; }; }
