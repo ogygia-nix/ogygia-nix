@@ -1,0 +1,12 @@
+#~flake path:@dir(root)#v
+#~lock
+#~tree root path
+#~file flake.nix
+{ inputs.dep.url = "path:@dir(dep)"; inputs.dep.inputs.x.url = "path:./y"; outputs = { self, dep, ... }: { v = [ dep.v dep.inputs.x.outPath ]; }; }
+#~file y/flake.nix
+{ outputs = { self }: { v = "root-y"; }; }
+#~tree dep path
+#~file flake.nix
+{ inputs.x.url = "path:./y"; outputs = { self, x }: { v = x.v; }; }
+#~file y/flake.nix
+{ outputs = { self }: { v = "dep-y"; }; }
