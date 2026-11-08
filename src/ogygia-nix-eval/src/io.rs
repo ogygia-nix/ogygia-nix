@@ -271,8 +271,14 @@ impl Io {
         Ok((Rc::new(Fs), Cow::Borrowed(logical)))
     }
 
+    /// The contents of the regular file `logical` resolves to.
     pub fn read(&self, logical: &str) -> Result<Vec<u8>> {
         self.check_access(logical)?;
+        match self.type_of(logical, true)? {
+            None => bail!("path '{logical}' does not exist"),
+            Some(FileType::Regular) => {}
+            Some(_) => bail!("file '{logical}' is not a regular file"),
+        }
         let (acc, path) = self.locate(logical)?;
         acc.read_file(&path)
             .with_context(|| format!("reading file '{logical}'"))
@@ -401,12 +407,6 @@ impl Io {
     /// false`), and return its store path.
     pub fn add_flat_to_store(&self, logical: &str, name: &str) -> Result<String> {
         store::check_name(name)?;
-        self.check_access(logical)?;
-        match self.type_of(logical, true)? {
-            None => bail!("path '{logical}' does not exist"),
-            Some(FileType::Regular) => {}
-            Some(_) => bail!("file '{logical}' is not a regular file"),
-        }
         let sp = self.store.add_flat(name, &self.read(logical)?)?;
         self.allow(sp)
     }
