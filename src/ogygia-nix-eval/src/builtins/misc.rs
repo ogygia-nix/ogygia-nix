@@ -45,12 +45,21 @@ pub fn bit_xor<'a>(ev: &Eval<'a>, a: Value<'a>, b: Value<'a>) -> R<'a> {
     bits(ev, a, b, |a, b| a ^ b)
 }
 
+/// The floats that convert to an integer without saturating.
+const INT_RANGE: std::ops::Range<f64> = -9.223_372_036_854_776e18..9.223_372_036_854_776e18;
+
 fn round<'a>(ev: &Eval<'a>, v: Value<'a>, f: fn(f64) -> f64, name: &str) -> R<'a> {
     match ev.force(v)? {
-        Value::Int(i) => Ok(Value::Int(i)),
+        Value::Int(i) => {
+            let x = i as f64;
+            if !INT_RANGE.contains(&x) || x as i64 != i {
+                return eval_err(format!("{name} of {i} is not exact as a float"));
+            }
+            Ok(Value::Int(i))
+        }
         Value::Float(x) => {
             let r = f(x);
-            if !(-9.223_372_036_854_776e18..9.223_372_036_854_776e18).contains(&r) {
+            if !INT_RANGE.contains(&r) {
                 return eval_err(format!(
                     "{name} of {} is out of the range of an integer",
                     crate::print::float_g(x)
