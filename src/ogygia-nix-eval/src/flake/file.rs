@@ -195,6 +195,19 @@ fn input_spec<'a>(ev: &Eval<'a>, name: &str, field: Field<'a>, top: bool) -> R<'
     Ok(spec)
 }
 
+/// Check `inputs.self`, which declares no input but attributes of the
+/// flake's own reference: `submodules` and `lfs` alone, which are ignored.
+fn self_attrs<'a>(ev: &Eval<'a>, field: Field<'a>) -> R<'a, ()> {
+    for (attr, f) in field.fields(ev, "for input 'self'")? {
+        let at = format!("for attribute '{attr}' of input 'self'");
+        f.expect(ev, "a string, integer or Boolean", &at, Attr::from_value)?;
+        if !matches!(attr, "submodules" | "lfs") {
+            return eval_err(format!("flake 'self' attribute '{attr}' is not supported"));
+        }
+    }
+    Ok(())
+}
+
 fn indirect(id: &str) -> Attrs {
     Attrs::from([
         ("type".to_owned(), Attr::Str("indirect".to_owned())),
@@ -231,7 +244,11 @@ pub fn load<'a>(ev: &Eval<'a>, dir: &str, shown: &str) -> R<'a, Flake<'a>> {
             "nixConfig" => {}
             "inputs" => {
                 for (input, i) in f.fields(ev, "for attribute 'inputs'")? {
-                    inputs.insert(input.to_owned(), input_spec(ev, input, i, true)?);
+                    if input == "self" {
+                        self_attrs(ev, i)?;
+                    } else {
+                        inputs.insert(input.to_owned(), input_spec(ev, input, i, true)?);
+                    }
                 }
             }
             "outputs" => outputs = Some(f),
