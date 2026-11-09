@@ -1,0 +1,4 @@
+#~flake path:@dir(root)#x
+#~tree root path
+#~file flake.nix
+{ nixConfig = { a = [ "x" ]; b = [ 1 ]; }; outputs = _: { x = 1; }; }

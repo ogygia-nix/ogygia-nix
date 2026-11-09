@@ -1,0 +1,4 @@
+#~flake path:@dir(root)#x
+#~tree root path
+#~file flake.nix
+{ nixConfig.bash-prompt = 1 + 1; outputs = _: { x = 1; }; }
