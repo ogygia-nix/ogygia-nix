@@ -219,6 +219,20 @@ fn locate_locked<'a>(
     }
 }
 
+/// Add `self_attrs`, from the `inputs.self` of the flake `attrs` refers to
+/// and `located` holds, to its reference, if it is a Git input.
+fn add_self_attrs(
+    attrs: &mut Attrs,
+    located: &mut Located,
+    self_attrs: &Attrs,
+) -> anyhow::Result<()> {
+    if flakeref::get_str(attrs, "type") == Some("git") {
+        attrs.extend(self_attrs.clone());
+        located.source.info.submodules = source::submodules(attrs)?;
+    }
+    Ok(())
+}
+
 /// The directory of the flake `attrs` refers to, in `base`, the directory
 /// it is relative to.
 fn flake_dir(base: &str, attrs: &Attrs) -> String {
@@ -398,10 +412,11 @@ pub(crate) fn eval_json<'a>(
         Some((f, a)) => (f, Some(a)),
         None => (installable, None),
     };
-    let attrs = r(installable_ref(flake, &env.cwd))?;
+    let mut attrs = r(installable_ref(flake, &env.cwd))?;
     let shown = flakeref::to_string(&attrs);
-    let located = fetch_flake(ev, env, &attrs)?.resolved();
+    let mut located = fetch_flake(ev, env, &attrs)?.resolved();
     let loaded = file::load(ev, &located.dir, &shown)?;
+    r(add_self_attrs(&mut attrs, &mut located, &loaded.self_attrs))?;
     let lock = read_lock(ev, &located.dir)?;
     lock.check_locked()?;
     // Nix locks the inputs anew, and goes on without writing the lock file

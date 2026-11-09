@@ -1,0 +1,28 @@
+#~flake @dir(root)/sub?submodules=1#x
+#~lock
+#~tree root git
+#~file sub/flake.nix
+{
+  inputs.a.url = "git+file://@dir(a)?submodules=1";
+  inputs.b.url = "git+file://@dir(b)";
+  inputs.c = { url = "git+file://@dir(b)"; flake = false; };
+  inputs.d.url = "git+file://@dir(b)?submodules=0";
+  inputs.e = { type = "git"; url = "file://@dir(e)"; submodules = true; };
+  inputs.f.url = "git+file://@dir(f)";
+  outputs = { self, ... }@i: {
+    x = map (n: [ n i.${n}.submodules i.${n}.sourceInfo.submodules ]) [ "self" "a" "b" "c" "d" "e" "f" ];
+  };
+}
+#~tree a git
+#~file flake.nix
+{ outputs = _: { }; }
+#~tree b git
+#~file flake.nix
+{ inputs.self.submodules = true; outputs = _: { }; }
+#~tree e git
+#~file flake.nix
+{ inputs.self.submodules = false; outputs = _: { }; }
+#~tree f git
+#~file flake.nix
+{ inputs.self.submodules = true; outputs = _: { }; }
+#~file dirty staged

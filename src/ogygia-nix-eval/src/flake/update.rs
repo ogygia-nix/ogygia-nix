@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use crate::eval::Eval;
 use crate::flake::FlakeEnv;
 use crate::flake::Located;
+use crate::flake::add_self_attrs;
 use crate::flake::fetch_flake;
 use crate::flake::file;
 use crate::flake::file::InputSpec;
@@ -285,7 +286,7 @@ impl<'a> Locker<'_, 'a> {
             ));
         }
         let mut locked = attrs.clone();
-        let located = match flakeref::relative_path(&attrs) {
+        let mut located = match flakeref::relative_path(&attrs) {
             // Within the flake declaring it.
             Some(rel) => relative(&self.located[&key(decl)], rel, &attrs)?,
             None => {
@@ -296,6 +297,17 @@ impl<'a> Locker<'_, 'a> {
             }
         };
         let shown = flakeref::to_string(&locked);
+        let loaded = if flake {
+            let loaded = file::load(self.ev, &located.dir, &shown)?;
+            r(add_self_attrs(
+                &mut locked,
+                &mut located,
+                &loaded.self_attrs,
+            ))?;
+            Some(loaded)
+        } else {
+            None
+        };
         self.nodes.insert(
             key(path),
             Node {
@@ -307,10 +319,9 @@ impl<'a> Locker<'_, 'a> {
             },
         );
         self.located.insert(key(path), located.clone());
-        if !flake {
+        let Some(loaded) = loaded else {
             return Ok(());
-        }
-        let loaded = file::load(self.ev, &located.dir, &shown)?;
+        };
         let lock = read_lock(self.ev, &located.dir)?;
         lock.check_locked()?;
         let old = Old {

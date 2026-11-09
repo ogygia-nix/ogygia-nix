@@ -34,6 +34,8 @@ pub struct InputSpec {
 pub struct Flake<'a> {
     pub inputs: BTreeMap<String, InputSpec>,
     pub outputs: Value<'a>,
+    /// The attributes `inputs.self` adds to the flake's own reference.
+    pub self_attrs: Attrs,
 }
 
 /// An attribute of a flake's literal sets, not yet evaluated.
@@ -155,17 +157,19 @@ fn input_spec<'a>(ev: &Eval<'a>, name: &str, field: Field<'a>, top: bool) -> R<'
     Ok(spec)
 }
 
-/// Check `inputs.self`, which declares no input but attributes of the
-/// flake's own reference: `submodules` and `lfs` alone, which are ignored.
-fn self_attrs<'a>(ev: &Eval<'a>, field: Field<'a>) -> R<'a, ()> {
+/// The attributes `inputs.self` adds to the flake's own reference, which it
+/// declares instead of an input: `submodules` and `lfs` alone.
+fn self_input<'a>(ev: &Eval<'a>, field: Field<'a>) -> R<'a, Attrs> {
+    let mut attrs = Attrs::new();
     for (attr, f) in field.fields(ev, "for input 'self'")? {
         let at = format!("for attribute '{attr}' of input 'self'");
-        f.expect(ev, "a string, integer or Boolean", &at, Attr::from_value)?;
+        let value = f.expect(ev, "a string, integer or Boolean", &at, Attr::from_value)?;
         if !matches!(attr, "submodules" | "lfs") {
             return eval_err(format!("flake 'self' attribute '{attr}' is not supported"));
         }
+        attrs.insert(attr.to_owned(), value);
     }
-    Ok(())
+    Ok(attrs)
 }
 
 /// Check `nixConfig`, whose settings Nix does not apply but requires to
@@ -231,6 +235,7 @@ fn read<'a>(ev: &Eval<'a>, dir: &str, shown: &str, config: bool) -> R<'a, Flake<
     let mut outputs = None;
     let mut unsupported = None;
     let mut inputs = BTreeMap::new();
+    let mut self_attrs = Attrs::new();
     for (name, f) in top.fields(ev, "")? {
         match name {
             "description" => {
@@ -241,7 +246,7 @@ fn read<'a>(ev: &Eval<'a>, dir: &str, shown: &str, config: bool) -> R<'a, Flake<
             "inputs" => {
                 for (input, i) in f.fields(ev, "for attribute 'inputs'")? {
                     if input == "self" {
-                        self_attrs(ev, i)?;
+                        self_attrs = self_input(ev, i)?;
                     } else {
                         inputs.insert(input.to_owned(), input_spec(ev, input, i, true)?);
                     }
@@ -282,5 +287,9 @@ fn read<'a>(ev: &Eval<'a>, dir: &str, shown: &str, config: bool) -> R<'a, Flake<
             }
         }
     }
-    Ok(Flake { inputs, outputs })
+    Ok(Flake {
+        inputs,
+        outputs,
+        self_attrs,
+    })
 }
