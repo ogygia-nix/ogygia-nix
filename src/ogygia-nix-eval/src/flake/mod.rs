@@ -123,7 +123,7 @@ impl<'a> Flakes<'a> {
                 .map(flakeref::to_string)
                 .unwrap_or_default()
         };
-        let flake = file::load(ev, &located.dir, &shown)?;
+        let flake = file::load_locked(ev, &located.dir, &shown)?;
         let mut args = vec![ev.entry("self", self.value(ev, key))];
         args.extend(self.inputs(ev, key)?);
         let v = ev.lazy_app(flake.outputs, ev.attrs(args));

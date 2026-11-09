@@ -353,7 +353,7 @@ impl<'a> Eval<'a> {
                 });
                 Step::Eval(func, env)
             }
-            Expr::Let(def) => Step::Eval(def.body, self.new_frame(def.slots, env)),
+            Expr::Let(def) => Step::Eval(def.body, self.new_frame(def.slots, env, true)),
             Expr::With { namespace, body } => {
                 let ns = self.lazy(namespace, env);
                 let env = self.alloc_env(1, env);
@@ -683,14 +683,14 @@ impl<'a> Eval<'a> {
         };
         let env = self.alloc_env(c.def.nslots(), c.env);
         let mut used = 0;
-        for (slot, formal) in env.slots.iter().zip(formals.iter()) {
+        for (i, (slot, formal)) in env.slots.iter().zip(formals.iter()).enumerate() {
             match attrs.get(formal.name) {
                 Some(v) => {
                     used += 1;
                     slot.set(v);
                 }
                 None => match formal.default {
-                    Some(d) => slot.set(self.lazy_slot(d, env)),
+                    Some(d) => slot.set(self.lazy_slot(d, env, i)),
                     None => {
                         return Err(error(
                             ErrorKind::Type,
@@ -969,8 +969,17 @@ impl<'a> Eval<'a> {
         def: &'a AttrsDef<'a>,
         env: &'a Env<'a>,
     ) -> R<'a, Step<'a>> {
+        let overrides = def
+            .recursive
+            .then(|| {
+                def.statics
+                    .binary_search_by_key(&self.ctx.syms.overrides, |s| s.name)
+            })
+            .and_then(Result::ok);
         let env = match def.frame {
-            Some(inits) => self.new_frame(inits, env),
+            // `__overrides` may rebind any slot, so none holds another's
+            // value.
+            Some(inits) => self.new_frame(inits, env, overrides.is_none()),
             None => env,
         };
         let entries: Vec<Entry<'a>> = def
@@ -985,13 +994,6 @@ impl<'a> Eval<'a> {
                 },
             })
             .collect();
-        let overrides = def
-            .recursive
-            .then(|| {
-                def.statics
-                    .binary_search_by_key(&self.ctx.syms.overrides, |s| s.name)
-            })
-            .and_then(Result::ok);
         let d = Box::new(Dynamic {
             def,
             env,

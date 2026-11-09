@@ -380,12 +380,18 @@ impl<'a> Eval<'a> {
         }
     }
 
-    /// [`Self::lazy`] for `e` filling in a slot of `env` while other slots of
-    /// `env` may not be filled in yet.
-    fn lazy_slot(&self, e: ExprRef<'a>, env: &'a Env<'a>) -> Value<'a> {
+    /// Whether `v` is the value of a builtin, which Nix holds as a value
+    /// even where it is a thunk here.
+    pub fn is_builtin(&self, v: Value<'a>) -> bool {
+        v.ptr()
+            .is_some_and(|p| self.globals.values().any(|g| g.ptr() == Some(p)))
+    }
+
+    /// [`Self::lazy`] for `e` filling in a slot of `env` while only its
+    /// first `filled` slots are filled in.
+    fn lazy_slot(&self, e: ExprRef<'a>, env: &'a Env<'a>, filled: usize) -> Value<'a> {
         match e {
-            // A variable of this frame may name a slot not filled in yet.
-            Expr::Var(0, _) => self.thunk(ThunkState::Expr(e, env)),
+            Expr::Var(0, i) if *i as usize >= filled => self.thunk(ThunkState::Expr(e, env)),
             _ => self.lazy(e, env),
         }
     }
@@ -437,10 +443,17 @@ impl<'a> Eval<'a> {
         })
     }
 
-    pub(crate) fn new_frame(&self, inits: &'a [ExprRef<'a>], parent: &'a Env<'a>) -> &'a Env<'a> {
+    /// A frame of `inits` under `parent`, filled in order. With `share`, a
+    /// slot naming one before it holds that slot's value.
+    pub(crate) fn new_frame(
+        &self,
+        inits: &'a [ExprRef<'a>],
+        parent: &'a Env<'a>,
+        share: bool,
+    ) -> &'a Env<'a> {
         let env = self.alloc_env(inits.len(), parent);
-        for (slot, e) in env.slots.iter().zip(inits) {
-            slot.set(self.lazy_slot(e, env));
+        for (i, (slot, e)) in env.slots.iter().zip(inits).enumerate() {
+            slot.set(self.lazy_slot(e, env, if share { i } else { 0 }));
         }
         env
     }

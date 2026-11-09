@@ -1340,16 +1340,21 @@ impl<'a> Compiler<'a> {
     /// Compile the bindings of a set or `let`, and then `body` in their scope.
     ///
     /// Recursive bindings (`rec` and `let`) are the first slots of a new
-    /// frame, in which every value is compiled. The `inherit (from)` sources
-    /// take the slots after them, so that each is evaluated once; a
+    /// frame, in which every value is compiled. They are in symbol order,
+    /// the order Nix fills them in, so that a binding naming one before it
+    /// holds that one's value rather than a thunk. The `inherit (from)`
+    /// sources take the slots after them, so that each is evaluated once; a
     /// non-recursive set has a frame only if it has such sources.
     fn bindings<T>(
         &mut self,
-        set: PreSet,
+        mut set: PreSet,
         recursive: bool,
         body: impl FnOnce(&mut Self) -> CResult<T>,
     ) -> CResult<Bindings<'a, T>> {
         let has_frame = recursive || !set.froms.is_empty();
+        if recursive {
+            set.statics.sort_by_key(|(n, _, _)| *n);
+        }
         if has_frame {
             let names: Vec<Sym> = match recursive {
                 true => set.statics.iter().map(|(n, _, _)| *n).collect(),

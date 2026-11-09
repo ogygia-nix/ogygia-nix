@@ -1,22 +1,19 @@
 //! `flake.nix`: a flake's description, inputs and outputs.
 //!
-//! Nix reads a flake's attributes without evaluating them: an attribute
-//! whose expression is not a literal set, list, function or constant, or a
-//! builtin, is a thunk to it, and is rejected wherever a value is expected.
+//! Nix reads a flake's attributes without evaluating them: an attribute it
+//! holds as a thunk is rejected wherever a value is expected.
 
 use std::collections::BTreeMap;
 
+use crate::eval::Coerce;
 use crate::eval::Eval;
 use crate::flake::flakeref;
 use crate::flake::flakeref::Attr;
 use crate::flake::flakeref::Attrs;
-use crate::ir::AttrValue;
-use crate::ir::AttrsDef;
 use crate::ir::Expr;
-use crate::ir::ExprRef;
 use crate::ir::Param;
-use crate::symbol::Sym;
 use crate::value::R;
+use crate::value::ThunkState;
 use crate::value::Value;
 use crate::value::anyhow_err;
 use crate::value::eval_err;
@@ -39,49 +36,25 @@ pub struct Flake<'a> {
     pub outputs: Value<'a>,
 }
 
-/// An attribute of a literal set, with its expression if it is known.
+/// An attribute of a flake's literal sets, not yet evaluated.
 #[derive(Clone, Copy)]
-struct Field<'a> {
-    value: Value<'a>,
-    expr: Option<ExprRef<'a>>,
-}
-
-/// Whether Nix evaluates `e` as part of the set it is an attribute of.
-fn eager(e: ExprRef<'_>) -> bool {
-    matches!(
-        e,
-        Expr::Attrs(_)
-            | Expr::List(_)
-            | Expr::Lambda(_)
-            | Expr::Null
-            | Expr::Bool(_)
-            | Expr::Int(_)
-            | Expr::Float(_)
-            | Expr::Str(_)
-            | Expr::Path(_)
-            | Expr::Global(_)
-    )
-}
-
-/// The expression of attribute `name` in the set `def` defines.
-fn attr_expr<'a>(ev: &Eval<'a>, def: &'a AttrsDef<'a>, name: Sym) -> Option<ExprRef<'a>> {
-    if let Ok(i) = def.statics.binary_search_by_key(&name, |s| s.name) {
-        return match def.statics[i].value {
-            AttrValue::Expr(e) => Some(e),
-            AttrValue::Slot(s) => def.frame.map(|f| f[s as usize]),
-        };
-    }
-    def.dynamics.iter().find_map(|d| match d.name {
-        Expr::Str(s) if s.s == ev.name(name).as_bytes() => Some(d.value),
-        _ => None,
-    })
-}
+struct Field<'a>(Value<'a>);
 
 impl<'a> Field<'a> {
-    /// The value, or `None` where Nix would see a thunk.
+    /// The value, or `None` where Nix holds a thunk. Nix holds a literal
+    /// list as a value, a literal set whose names are all static, and a
+    /// builtin.
     fn peek(self, ev: &Eval<'a>) -> R<'a, Option<Value<'a>>> {
-        match self.expr {
-            Some(e) if eager(e) => Ok(Some(ev.force(self.value)?)),
+        let Value::Thunk(t) = self.0 else {
+            return Ok(Some(self.0));
+        };
+        match t.0.get() {
+            ThunkState::Done(v) => Ok(Some(v)),
+            ThunkState::Expr(Expr::List(_), _) => Ok(Some(ev.force(self.0)?)),
+            ThunkState::Expr(Expr::Attrs(def), _) if def.dynamics.is_empty() => {
+                Ok(Some(ev.force(self.0)?))
+            }
+            _ if ev.is_builtin(self.0) => Ok(Some(ev.force(self.0)?)),
             _ => Ok(None),
         }
     }
@@ -117,23 +90,10 @@ impl<'a> Field<'a> {
             Value::Attrs(a) => Some(a),
             _ => None,
         })?;
-        let def = match self.expr {
-            Some(Expr::Attrs(def)) => Some(*def),
-            _ => None,
-        };
         Ok(attrs
             .sorted(ev.ctx)
             .into_iter()
-            .map(|e| {
-                let expr = def.and_then(|d| attr_expr(ev, d, e.name));
-                (
-                    ev.name(e.name),
-                    Field {
-                        value: e.value,
-                        expr,
-                    },
-                )
-            })
+            .map(|e| (ev.name(e.name), Field(e.value)))
             .collect())
     }
 }
@@ -208,6 +168,35 @@ fn self_attrs<'a>(ev: &Eval<'a>, field: Field<'a>) -> R<'a, ()> {
     Ok(())
 }
 
+/// Check `nixConfig`, whose settings Nix does not apply but requires to
+/// be strings, integers, Booleans, paths it can copy to the store, or lists
+/// of strings.
+fn check_config<'a>(ev: &Eval<'a>, field: Field<'a>) -> R<'a, ()> {
+    for (name, f) in field.fields(ev, "for attribute 'nixConfig'")? {
+        let got = match f.peek(ev)? {
+            None => "a thunk",
+            Some(Value::Str(_) | Value::Int(_) | Value::Bool(_)) => continue,
+            Some(v @ Value::Path(_)) => {
+                ev.coerce_to_string(v, Coerce::INTERP)?;
+                continue;
+            }
+            Some(Value::List(l)) => {
+                for item in l.items {
+                    if !matches!(Field(*item).peek(ev)?, Some(Value::Str(_))) {
+                        return eval_err(format!(
+                            "list element in flake configuration setting '{name}' is a list while a string is expected"
+                        ));
+                    }
+                }
+                continue;
+            }
+            Some(v) => v.show_type(),
+        };
+        return eval_err(format!("flake configuration setting '{name}' is {got}"));
+    }
+    Ok(())
+}
+
 fn indirect(id: &str) -> Attrs {
     Attrs::from([
         ("type".to_owned(), Attr::Str("indirect".to_owned())),
@@ -219,6 +208,15 @@ fn indirect(id: &str) -> Attrs {
 /// as `shown`. Any `.` and `..` in `dir` are resolved without consulting
 /// the filesystem.
 pub fn load<'a>(ev: &Eval<'a>, dir: &str, shown: &str) -> R<'a, Flake<'a>> {
+    read(ev, dir, shown, true)
+}
+
+/// [`load`] for a locked input, whose `nixConfig` Nix does not check.
+pub fn load_locked<'a>(ev: &Eval<'a>, dir: &str, shown: &str) -> R<'a, Flake<'a>> {
+    read(ev, dir, shown, false)
+}
+
+fn read<'a>(ev: &Eval<'a>, dir: &str, shown: &str, config: bool) -> R<'a, Flake<'a>> {
     let file = format!("{}/flake.nix", crate::path::canon_path(dir));
     if !ev.ctx.io.exists(&file).map_err(anyhow_err)? {
         return eval_err(format!(
@@ -229,10 +227,7 @@ pub fn load<'a>(ev: &Eval<'a>, dir: &str, shown: &str) -> R<'a, Flake<'a>> {
     if !matches!(expr, Expr::Attrs(_)) {
         return eval_err(format!("file '{file}' must be an attribute set"));
     }
-    let top = Field {
-        value: ev.eval(expr, ev.root_env())?,
-        expr: Some(expr),
-    };
+    let top = Field(ev.eval(expr, ev.root_env())?);
     let mut outputs = None;
     let mut unsupported = None;
     let mut inputs = BTreeMap::new();
@@ -241,6 +236,7 @@ pub fn load<'a>(ev: &Eval<'a>, dir: &str, shown: &str) -> R<'a, Flake<'a>> {
             "description" => {
                 f.string(ev, "for attribute 'description'")?;
             }
+            "nixConfig" if config => check_config(ev, f)?,
             "nixConfig" => {}
             "inputs" => {
                 for (input, i) in f.fields(ev, "for attribute 'inputs'")? {
