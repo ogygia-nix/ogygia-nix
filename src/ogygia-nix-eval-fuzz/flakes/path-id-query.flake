@@ -1,0 +1,4 @@
+#~flake pa?x#x
+#~tree root path
+#~file pa/flake.nix
+{ outputs = _: { x = 1; }; }

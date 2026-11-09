@@ -318,8 +318,7 @@ fn installable_ref(flake: &str, cwd: &Path) -> anyhow::Result<Attrs> {
         Some((base, query)) => (base, format!("?{query}")),
         None => (flake, String::new()),
     };
-    let attrs = flakeref::parse(base, Some(cwd))?;
-    let path = PathBuf::from(flakeref::get_str(&attrs, "path").unwrap_or(""));
+    let path = PathBuf::from(flakeref::path(base, cwd));
     let dir = find_flake(&path)?;
     let Some(root) = git_root(dir) else {
         let mut attrs = flakeref::parse(flake, Some(cwd))?;

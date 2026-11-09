@@ -90,13 +90,8 @@ pub fn parse(url: &str, cwd: Option<&Path>) -> Result<Attrs> {
     let r = url.as_bytes();
     let parsed = if flake::is_path(r) {
         let (base, query) = url.split_once('?').unwrap_or((url, ""));
-        let mut path = String::new();
-        for c in base.chars() {
-            if !(c == '/' && path.ends_with('/')) {
-                path.push(c);
-            }
-        }
-        flake::params(query.as_bytes()).and_then(|p| flake::path_attrs(path.into_bytes(), p, url))
+        flake::params(query.as_bytes())
+            .and_then(|p| flake::path_attrs(squash_slashes(base).into_bytes(), p, url))
     } else {
         flake::url_ref(r, true)
     };
@@ -116,6 +111,22 @@ pub fn parse(url: &str, cwd: Option<&Path>) -> Result<Attrs> {
         *path = resolve(path, cwd);
     }
     Ok(attrs)
+}
+
+/// The path of the path flake reference `base`, which has no query, made
+/// absolute against `cwd`.
+pub fn path(base: &str, cwd: &Path) -> String {
+    resolve(&squash_slashes(base), Some(cwd))
+}
+
+fn squash_slashes(base: &str) -> String {
+    let mut path = String::new();
+    for c in base.chars() {
+        if !(c == '/' && path.ends_with('/')) {
+            path.push(c);
+        }
+    }
+    path
 }
 
 /// `path` against `cwd`, if given and `path` is relative, with `.` and `..`
