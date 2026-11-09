@@ -1,0 +1,4 @@
+#~flake git+file://@dir(root)?submodules=1#x
+#~tree root git
+#~file flake.nix
+{ inputs.self.submodules = false; outputs = { self }: { x = [ self.submodules self.sourceInfo.submodules ]; }; }

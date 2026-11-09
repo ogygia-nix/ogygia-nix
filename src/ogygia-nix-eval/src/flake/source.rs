@@ -23,6 +23,7 @@ use crate::archive;
 use crate::archive::MemTree;
 use crate::flake::FlakeEnv;
 use crate::flake::flakeref;
+use crate::flake::flakeref::Attr;
 use crate::flake::flakeref::Attrs;
 use crate::io;
 use crate::io::Io;
@@ -474,7 +475,6 @@ fn fetch_git_worktree(io: &Io, dir: &Path, what: &str) -> Result<Source> {
             Some(c) => c.time()?.seconds.max(0) as u64,
             None => 0,
         }),
-        submodules: Some(false),
         ..Info::default()
     };
     if let Some(head) = head {
@@ -515,7 +515,6 @@ fn fetch_git_rev(io: &Io, dir: &Path, rev: &str, locked: &Attrs, what: &str) -> 
             last_modified: Some(flakeref::get_int(locked, "lastModified").unwrap_or(last_modified)),
             rev: Some(id.to_string()),
             rev_count: Some(rev_count),
-            submodules: Some(false),
             ..Info::default()
         },
     })
@@ -656,8 +655,30 @@ fn forge_archive_url(ty: &str, attrs: &Attrs, rev: &str) -> String {
     }
 }
 
+/// Whether the Git input `attrs` includes submodules, or `None` if it is
+/// not a Git input. Its `submodules` and `lfs` must be Booleans.
+pub fn submodules(attrs: &Attrs) -> Result<Option<bool>> {
+    if flakeref::get_str(attrs, "type") != Some("git") {
+        return Ok(None);
+    }
+    let flag = |name| match attrs.get(name) {
+        None => Ok(false),
+        Some(Attr::Bool(b)) => Ok(*b),
+        Some(_) => bail!("input attribute '{name}' is not a Boolean"),
+    };
+    flag("lfs")?;
+    flag("submodules").map(Some)
+}
+
 /// Fetch the source of the input `attrs`, locked or not.
 pub fn fetch(io: &Io, env: &FlakeEnv, attrs: &Attrs, what: &str) -> Result<Source> {
+    let submodules = submodules(attrs)?;
+    let mut source = fetch_tree(io, env, attrs, what)?;
+    source.info.submodules = submodules;
+    Ok(source)
+}
+
+fn fetch_tree(io: &Io, env: &FlakeEnv, attrs: &Attrs, what: &str) -> Result<Source> {
     let ty = flakeref::get_str(attrs, "type").unwrap_or("");
     let url = flakeref::get_str(attrs, "url").unwrap_or("");
     match (ty, file_url_path(url)) {

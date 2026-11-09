@@ -1,0 +1,4 @@
+#~flake git+file://@dir(root)#x
+#~tree root git
+#~file flake.nix
+{ inputs.self.submodules = "1"; outputs = { self }: { x = 1; }; }
