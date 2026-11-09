@@ -212,8 +212,8 @@ impl Store {
         format!("local?root={}", self.0.path().display())
     }
 
-    // Nix prints a chroot store's paths at their location on disk, under the
-    // root, rather than in the store directory, until NixOS/nix#16625.
+    // Nix's error messages and traces name a chroot store's paths at their
+    // location on disk, under the root, rather than in the store directory.
     fn unroot(&self, out: &str) -> String {
         out.replace(
             &format!("{}/nix/store", self.0.path().display()),

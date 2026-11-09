@@ -68,9 +68,10 @@ pub enum Skip {
     /// ogygia-nix-eval failed reading `/` or `/nix/store`, as forbidden in
     /// pure evaluation or as not existing, where Nix succeeded after adding
     /// a path to its store. Once it has added one, Nix lets pure evaluation
-    /// see the parents of store paths, `/` as an empty directory; that is a
-    /// harmless artefact of its implementation, which ogygia-nix-eval does
-    /// not match and which is not reported upstream.
+    /// see the parents of store paths: `/` as an empty directory and
+    /// `/nix/store` holding the paths it added. That is a harmless artefact
+    /// of its implementation, which ogygia-nix-eval does not match and
+    /// which is not reported upstream.
     StoreRoot,
     /// ogygia-nix-eval reached a feature it deliberately leaves out, such
     /// as fetching, and failed with an error naming it where Nix may not.
@@ -486,22 +487,15 @@ mod tests {
             format!("{stored} (builtins.filterSource (p: t: true) /.)"),
             format!("{stored} (builtins.readFileType /.)"),
             format!("{stored} (builtins.readFileType /nix/store)"),
+            format!("{stored} (builtins.readDir /nix/store)"),
+            format!(r#"{stored} "${{/nix/store}}""#),
+            r#"builtins.readDir "${builtins.toFile "x" "y"}/..""#.to_owned(),
             r#"builtins.seq "${<nix/fetchurl.nix>}" (builtins.readDir /.)"#.to_owned(),
             // Where both fail, but only ours fails uncatchably.
             format!(r#"[ ({stored} (builtins.readDir /.)) (throw "t") ]"#),
         ] {
             assert_eq!(outcome(&expr), "deliberate-divergence store-root", "{expr}");
         }
-        // Nix fails listing or copying the store directory uncatchably, as
-        // ours does.
-        assert_eq!(
-            outcome(&format!("{stored} (builtins.readDir /nix/store)")),
-            "uncaught"
-        );
-        assert_eq!(
-            outcome(&format!(r#"{stored} "${{/nix/store}}""#)),
-            "uncaught"
-        );
     }
 
     #[test]
