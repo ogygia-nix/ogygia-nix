@@ -114,8 +114,7 @@ fn compile_inner<'a>(
     pure: bool,
     extra_scope: Option<&[Sym]>,
 ) -> CResult<ExprRef<'a>> {
-    let text = end_comments_at_cr(source.text);
-    let (text, inserted) = match_nix_tokens(&text);
+    let (text, inserted) = match_nix_tokens(source.text);
     let (text, inserted) = parenthesise_legacy_lets(text, inserted);
     let (text, inserted) = parenthesise_inverts(text, inserted);
     let pos = |range: TextRange| span(source, &inserted, range);
@@ -326,41 +325,27 @@ fn invalid_whitespace(text: &str) -> Option<u32> {
 }
 
 /// Nix ends a `#` comment at `\r` as well as `\n`, but rnix only at `\n`.
-/// Rewrites each `\r` that ends a comment to `\n`, which keeps offsets and
-/// changes nothing else, then retokenises as the text after it is now code.
-fn end_comments_at_cr(text: &str) -> Cow<'_, str> {
-    let mut text = Cow::Borrowed(text);
-    if !text.contains('\r') {
-        return text;
-    }
-    loop {
-        let mut start = 0;
-        let cr = rnix::tokenize(&text).find_map(|(kind, s)| {
-            let at = start;
-            start += s.len();
-            if kind == rnix::SyntaxKind::TOKEN_COMMENT && s.starts_with('#') {
-                s.find('\r').map(|i| at + i)
-            } else {
-                None
-            }
-        });
-        match cr {
-            Some(i) => text.to_mut().replace_range(i..=i, "\n"),
-            None => return text,
-        }
+/// Returns where the first `\r` is in a `#` comment token.
+fn comment_cr(kind: rnix::SyntaxKind, s: &str) -> Option<usize> {
+    if kind == rnix::SyntaxKind::TOKEN_COMMENT && s.starts_with('#') {
+        s.find('\r')
+    } else {
+        None
     }
 }
 
-/// Inserts text wherever rnix lexes the source differently from Nix: a space
-/// where rnix lexes one token but Nix lexes several or rnix parses a token as
-/// part of the path before it but Nix does not, `./` before an ellipsis
-/// Nix lexes as the start of a path, and an empty interpolation between the
-/// slashes of `//` in a path continued after an interpolation. Retokenises after each as the text after
-/// it changes, and returns the offsets of the inserted bytes in the result.
+/// Rewrites the source wherever rnix lexes it differently from Nix: `\n` for
+/// a `\r` that ends a comment, which keeps offsets, and inserts a space where
+/// rnix lexes one token but Nix lexes several or rnix parses a token as part
+/// of the path before it but Nix does not, `./` before an ellipsis Nix lexes
+/// as the start of a path, and an empty interpolation between the slashes of
+/// `//` in a path continued after an interpolation. Retokenises after each
+/// change as the text after it changes, and returns the offsets of the
+/// inserted bytes in the result.
 fn match_nix_tokens(text: &str) -> (Cow<'_, str>, Vec<u32>) {
     let mut text = Cow::Borrowed(text);
     let mut inserted = Vec::new();
-    if !text.contains(['/', '.', '<']) {
+    if !text.contains(['/', '.', '<', '\r']) {
         return (text, inserted);
     }
     loop {
@@ -385,6 +370,9 @@ fn match_nix_tokens(text: &str) -> (Cow<'_, str>, Vec<u32>) {
                 TOKEN_INTERPOL_END => closed_path = interpols.pop().unwrap_or(false),
                 _ => {}
             }
+            if let Some(i) = comment_cr(kind, s) {
+                return Some((at + i, None));
+            }
             split_division(kind, s, continues_path)
                 .or_else(|| split_number(kind, s))
                 .or_else(|| split_less(kind, s))
@@ -394,9 +382,11 @@ fn match_nix_tokens(text: &str) -> (Cow<'_, str>, Vec<u32>) {
                 .or_else(|| {
                     empty_path_segment(kind, s, continues_path).map(|i| (at + i, "${\"\"}"))
                 })
+                .map(|(i, s)| (i, Some(s)))
         });
         match insert {
-            Some((i, s)) => {
+            Some((i, None)) => text.to_mut().replace_range(i..=i, "\n"),
+            Some((i, Some(s))) => {
                 text.to_mut().insert_str(i, s);
                 inserted.extend((i..i + s.len()).map(|i| i as u32));
             }
