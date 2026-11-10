@@ -258,7 +258,7 @@ fn nix_output(
 ) -> Result<String, Outcome> {
     let mut cmd = flake_command(store, &work.join("cache"), work);
     cmd.args(args);
-    let ran = run_command(cmd, b"", store, budget)?;
+    let ran = run_command(cmd, b"", budget)?;
     if !ran.success {
         return Err(malformed());
     }
@@ -316,7 +316,7 @@ fn nix_eval(
         success,
         stdout,
         stderr,
-    } = run_command(cmd, b"", store, budget)?;
+    } = run_command(cmd, b"", budget)?;
     Ok(if success {
         Ok(stdout.strip_suffix('\n').unwrap_or(&stdout).to_owned())
     } else {
@@ -371,7 +371,7 @@ fn check_bundle(
         let flake = reference.split_once('#').map_or(&*reference, |(f, _)| f);
         let mut cmd = flake_command(store, &work.join("cache"), &trees.cwd);
         cmd.args(["flake", "lock", flake]);
-        run_command(cmd, b"", store, budget)?;
+        run_command(cmd, b"", budget)?;
         // Locking writes the lock file now.
         set_mtimes(&trees.cwd);
     }

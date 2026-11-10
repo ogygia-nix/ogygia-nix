@@ -212,15 +212,6 @@ impl Store {
         format!("local?root={}", self.0.path().display())
     }
 
-    // Nix's error messages and traces name a chroot store's paths at their
-    // location on disk, under the root, rather than in the store directory.
-    fn unroot(&self, out: &str) -> String {
-        out.replace(
-            &format!("{}/nix/store", self.0.path().display()),
-            "/nix/store",
-        )
-    }
-
     /// Where the store directory, `/nix/store`, is on disk.
     pub(crate) fn dir(&self) -> PathBuf {
         self.0.path().join("nix/store")
@@ -291,33 +282,22 @@ pub(crate) fn nix_command(program: &str, store: &Store) -> Command {
     cmd
 }
 
-/// What a Nix command did, with its output's chroot store paths made store
-/// paths.
+/// What a Nix command did.
 pub(crate) struct Ran {
     pub success: bool,
     pub stdout: String,
     pub stderr: String,
 }
 
-/// Run `cmd`, made by [`nix_command`] for `store`, within `budget`, writing
+/// Run `cmd`, made by [`nix_command`], within `budget`, writing
 /// `input` to its standard input. Fails with [`Outcome::Skipped`] or a
 /// deliberate divergence when what Nix did says nothing about equivalence.
-pub(crate) fn run_command(
-    cmd: Command,
-    input: &[u8],
-    store: &Store,
-    budget: Budget,
-) -> Result<Ran, Outcome> {
-    run_within(cmd, input, store, budget.limit())
+pub(crate) fn run_command(cmd: Command, input: &[u8], budget: Budget) -> Result<Ran, Outcome> {
+    run_within(cmd, input, budget.limit())
 }
 
 /// [`run_command`] within `limit`, if any.
-fn run_within(
-    mut cmd: Command,
-    input: &[u8],
-    store: &Store,
-    limit: Option<Limit>,
-) -> Result<Ran, Outcome> {
+fn run_within(mut cmd: Command, input: &[u8], limit: Option<Limit>) -> Result<Ran, Outcome> {
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -355,8 +335,8 @@ fn run_within(
     // Killing whatever Nix left running closes its output.
     drop(cgroup);
     stdin.join().unwrap();
-    let stdout = store.unroot(&String::from_utf8_lossy(&stdout.join().unwrap()));
-    let stderr = store.unroot(&String::from_utf8_lossy(&stderr.join().unwrap()));
+    let stdout = String::from_utf8_lossy(&stdout.join().unwrap()).into_owned();
+    let stderr = String::from_utf8_lossy(&stderr.join().unwrap()).into_owned();
     let status = status?;
     if out_of_memory || exhausted(&stderr) {
         return Err(Outcome::Skipped);
@@ -379,7 +359,7 @@ pub(crate) fn run_nix(mode: &[&str], expr: &str, budget: Budget) -> Result<Their
     // On standard input, the expression cannot be mistaken for a flag and
     // may contain NUL bytes.
     cmd.args(mode).args(NIX_ARGS).arg("-");
-    let ran = run_command(cmd, expr.as_bytes(), &store, budget)?;
+    let ran = run_command(cmd, expr.as_bytes(), budget)?;
     Ok(Theirs {
         run: if ran.success {
             Ok(ran
@@ -948,8 +928,7 @@ pub(crate) mod tests {
             let store = Store::new();
             let mut cmd = nix_command(&nix_instantiate(), &store);
             cmd.args(["--eval", "--strict"]).args(NIX_ARGS).arg("-");
-            run_within(cmd, expr.as_bytes(), &store, Some(Limit { time, memory }))
-                .map(|ran| ran.stdout)
+            run_within(cmd, expr.as_bytes(), Some(Limit { time, memory })).map(|ran| ran.stdout)
         };
         // Nix itself needs about 20 MiB.
         let memory = 32 << 20;
