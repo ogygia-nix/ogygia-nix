@@ -524,13 +524,13 @@ fn fetch_git_rev(io: &Io, dir: &Path, rev: &str, locked: &Attrs, what: &str) -> 
 /// The revision a local Git input `attrs` without one is locked to: the
 /// commit its `ref` names, or else `HEAD` if the working tree is clean.
 /// `None` leaves it unlocked, as are a dirty working tree and inputs of
-/// any other kind.
-pub fn locked_rev(attrs: &Attrs) -> Result<Option<String>> {
+/// any other kind. A relative path is relative to `cwd`.
+pub fn locked_rev(attrs: &Attrs, cwd: &Path) -> Result<Option<String>> {
     let url = flakeref::get_str(attrs, "url").unwrap_or("");
     let (Some("git"), None, Some(dir)) = (
         flakeref::get_str(attrs, "type"),
         flakeref::get_str(attrs, "rev"),
-        file_url_path(url),
+        git_dir(url, cwd),
     ) else {
         return Ok(None);
     };
@@ -571,21 +571,19 @@ fn from_store(io: &Io, locked: &Attrs) -> Result<Option<Source>> {
     }))
 }
 
-/// The absolute path a `file:` URL with no host names, such as `/r` for
-/// `file:/r` or `file:///r?q#f`, decoded.
-fn file_url_path(url: &str) -> Option<PathBuf> {
-    let rest = url.strip_prefix("file:")?;
-    let path = rest.strip_prefix("//").unwrap_or(rest);
-    let path = path.split(['?', '#']).next().unwrap_or(path);
-    let path = crate::builtins::url::decode(path.as_bytes());
-    path.starts_with(b"/")
-        .then(|| PathBuf::from(OsStr::from_bytes(&path)))
+/// The directory of the local Git repository the `file:` URL `url` names.
+/// A relative path is relative to `cwd`, and an empty one is `/`.
+fn git_dir(url: &str, cwd: &Path) -> Option<PathBuf> {
+    flakeref::file_url_path(url).or_else(|| {
+        let (path, _) = flakeref::relative_file_url(url)?;
+        Some(cwd.join(OsStr::from_bytes(&path)))
+    })
 }
 
 /// The contents of the file at `url`: read directly for a local `file:`
 /// URL, and downloaded by `env`'s fetcher otherwise.
 fn download(env: &FlakeEnv, url: &str) -> Result<Vec<u8>> {
-    if let Some(path) = file_url_path(url) {
+    if let Some(path) = flakeref::file_url_path(url) {
         return std::fs::read(&path).with_context(|| format!("reading '{}'", path.display()));
     }
     match &env.fetcher {
@@ -660,7 +658,7 @@ fn forge_archive_url(ty: &str, attrs: &Attrs, rev: &str) -> String {
 pub fn fetch(io: &Io, env: &FlakeEnv, attrs: &Attrs, what: &str) -> Result<Source> {
     let ty = flakeref::get_str(attrs, "type").unwrap_or("");
     let url = flakeref::get_str(attrs, "url").unwrap_or("");
-    match (ty, file_url_path(url)) {
+    match (ty, git_dir(url, &env.cwd)) {
         ("path", _) => {
             let path = flakeref::get_str(attrs, "path").unwrap_or("");
             return fetch_path(io, Path::new(path), attrs, what);

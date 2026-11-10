@@ -1,0 +1,14 @@
+#~flake git+file:sub/..?dir=sub#x
+#~lock
+#~tree root git
+#~file sub/flake.nix
+{
+  inputs.dep.url = "git+file:../dep";
+  inputs.up.url = "git+file:sub/..";
+  outputs = { self, dep, up }: { x = [ (self ? dirtyRev) dep.revCount dep.x up.x ]; };
+}
+#~file flake.nix
+{ outputs = { self }: { x = 2; }; }
+#~tree dep git
+#~file flake.nix
+{ outputs = { self }: { x = 1; }; }

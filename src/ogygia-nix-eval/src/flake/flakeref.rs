@@ -2,7 +2,10 @@
 //! attribute sets lock files record them as.
 
 use std::collections::BTreeMap;
+use std::ffi::OsString;
+use std::os::unix::ffi::OsStringExt;
 use std::path::Path;
+use std::path::PathBuf;
 
 use anyhow::Result;
 use anyhow::bail;
@@ -84,8 +87,8 @@ pub(crate) fn percent_decode(s: &str) -> Result<String> {
 
 /// Parse a flake reference as written in a flake's inputs or on the command
 /// line, as `builtins.parseFlakeRef` does, except that a path may be
-/// relative. Relative paths are kept as written when `cwd` is `None`, and
-/// otherwise made absolute against it.
+/// relative, as may a Git repository's `file:` URL. Relative paths are kept
+/// as written when `cwd` is `None`, and otherwise made absolute against it.
 pub fn parse(url: &str, cwd: Option<&Path>) -> Result<Attrs> {
     let r = url.as_bytes();
     let parsed = if flake::is_path(r) {
@@ -110,7 +113,42 @@ pub fn parse(url: &str, cwd: Option<&Path>) -> Result<Attrs> {
     if let Some(Attr::Str(path)) = attrs.get_mut("path") {
         *path = resolve(path, cwd);
     }
+    let is_git = get_str(&attrs, "type") == Some("git");
+    if let (Some(cwd), true, Some(Attr::Str(url))) = (cwd, is_git, attrs.get_mut("url"))
+        && let Some((path, rest)) = relative_file_url(url)
+    {
+        let path = resolve(&String::from_utf8_lossy(&path), Some(cwd));
+        let path = crate::builtins::url::encode(path.as_bytes(), b"/");
+        *url = format!("file:{}{rest}", String::from_utf8_lossy(&path));
+    }
     Ok(attrs)
+}
+
+/// The decoded path of the `file:` URL `url`, such as `.` for `file:.?a=b`,
+/// and what follows it, if the path is relative or empty. An empty path is
+/// `/`.
+pub fn relative_file_url(url: &str) -> Option<(Vec<u8>, &str)> {
+    match split_file_url(url)? {
+        ("", rest) => Some((b"/".to_vec(), rest)),
+        (path, _) if path.starts_with('/') => None,
+        (path, rest) => Some((crate::builtins::url::decode(path.as_bytes()), rest)),
+    }
+}
+
+/// The absolute path a `file:` URL with no host names, such as `/r` for
+/// `file:/r` or `file:///r?q#f`, decoded.
+pub fn file_url_path(url: &str) -> Option<PathBuf> {
+    let (path, _) = split_file_url(url)?;
+    let path = crate::builtins::url::decode(path.strip_prefix("//").unwrap_or(path).as_bytes());
+    path.starts_with(b"/")
+        .then(|| PathBuf::from(OsString::from_vec(path)))
+}
+
+/// The `file:` URL `url` without its scheme, split before its query or
+/// fragment.
+fn split_file_url(url: &str) -> Option<(&str, &str)> {
+    let rest = url.strip_prefix("file:")?;
+    Some(rest.split_at(rest.find(['?', '#']).unwrap_or(rest.len())))
 }
 
 /// The path of the path flake reference `base`, which has no query, made
@@ -244,6 +282,35 @@ mod tests {
             parse("./a/../b", Some(Path::new("/c"))).unwrap(),
             s(&[("type", "path"), ("path", "/c/b")])
         );
+        assert_eq!(
+            parse("git+file:a/..?dir=d", Some(Path::new("/c d"))).unwrap(),
+            s(&[("type", "git"), ("url", "file:/c%20d"), ("dir", "d")])
+        );
+        assert_eq!(
+            parse("git+file:?a=b", Some(Path::new("/c"))).unwrap(),
+            s(&[("type", "git"), ("url", "file:/?a=b")])
+        );
+        assert_eq!(
+            parse("git+file:a", None).unwrap(),
+            s(&[("type", "git"), ("url", "file:a")])
+        );
+    }
+
+    #[test]
+    fn splits_file_urls() {
+        assert_eq!(
+            relative_file_url("file:a%20b?c#d"),
+            Some((b"a b".to_vec(), "?c#d"))
+        );
+        assert_eq!(relative_file_url("file:#d"), Some((b"/".to_vec(), "#d")));
+        assert_eq!(relative_file_url("file:/a"), None);
+        assert_eq!(
+            file_url_path("file:///a%20b?c"),
+            Some(PathBuf::from("/a b"))
+        );
+        assert_eq!(file_url_path("file:/a#//b"), Some(PathBuf::from("/a")));
+        assert_eq!(file_url_path("file://h/a"), None);
+        assert_eq!(file_url_path("file:a"), None);
     }
 
     #[test]

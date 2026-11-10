@@ -289,7 +289,7 @@ impl<'a> Locker<'_, 'a> {
             // Within the flake declaring it.
             Some(rel) => relative(&self.located[&key(decl)], rel, &attrs)?,
             None => {
-                if let Some(rev) = r(source::locked_rev(&locked))? {
+                if let Some(rev) = r(source::locked_rev(&locked, &self.env.cwd))? {
                     locked.insert("rev".to_owned(), Attr::Str(rev));
                 }
                 fetch_flake(self.ev, self.env, &locked)?.resolved()
