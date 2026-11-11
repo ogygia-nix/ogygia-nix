@@ -47,18 +47,15 @@ impl<'a> Field<'a> {
     /// list as a value, a literal set whose names are all static, and a
     /// builtin.
     fn peek(self, ev: &Eval<'a>) -> R<'a, Option<Value<'a>>> {
-        let Value::Thunk(t) = self.0 else {
-            return Ok(Some(self.0));
+        let held = match self.0 {
+            Value::Thunk(t) => match t.0.get() {
+                ThunkState::Done(_) | ThunkState::Expr(Expr::List(_), _) => true,
+                ThunkState::Expr(Expr::Attrs(def), _) if def.dynamics.is_empty() => true,
+                _ => ev.is_builtin(self.0),
+            },
+            _ => true,
         };
-        match t.0.get() {
-            ThunkState::Done(v) => Ok(Some(v)),
-            ThunkState::Expr(Expr::List(_), _) => Ok(Some(ev.force(self.0)?)),
-            ThunkState::Expr(Expr::Attrs(def), _) if def.dynamics.is_empty() => {
-                Ok(Some(ev.force(self.0)?))
-            }
-            _ if ev.is_builtin(self.0) => Ok(Some(ev.force(self.0)?)),
-            _ => Ok(None),
-        }
+        held.then(|| ev.force(self.0)).transpose()
     }
 
     fn expect<T>(

@@ -88,9 +88,17 @@ impl<'a> Flakes<'a> {
         let Some(locked) = &node.locked else {
             return eval_err(format!("lock file node '{key}' is not locked"));
         };
-        let located = locate_locked(ev, self.env, locked, node.parent.as_deref(), |parent| {
-            self.locate(ev, self.lock.resolve(parent)?)
-        })?;
+        let located = match (flakeref::relative_path(locked), &node.parent) {
+            // Within the flake it is relative to, and from the same source.
+            (Some(rel), Some(parent)) => {
+                let parent = self.locate(ev, self.lock.resolve(parent)?)?;
+                Located {
+                    dir: flake_dir(&format!("{}/{rel}", parent.dir), locked),
+                    source: parent.source,
+                }
+            }
+            _ => fetch_flake(ev, self.env, locked)?,
+        };
         self.sources.borrow_mut().insert(key, located.clone());
         Ok(located)
     }
@@ -194,29 +202,6 @@ fn fetch_flake<'a>(ev: &Eval<'a>, env: &FlakeEnv, attrs: &Attrs) -> R<'a, Locate
         dir: flake_dir(&source.path, attrs),
         source,
     })
-}
-
-/// The flake a lock file node locks to `locked`: within the flake
-/// `locate_parent` gives for its `parent` if its path is relative to that,
-/// and fetched otherwise.
-fn locate_locked<'a>(
-    ev: &Eval<'a>,
-    env: &FlakeEnv,
-    locked: &Attrs,
-    parent: Option<&[String]>,
-    locate_parent: impl FnOnce(&[String]) -> R<'a, Located>,
-) -> R<'a, Located> {
-    match (flakeref::relative_path(locked), parent) {
-        // Within the flake it is relative to, and from the same source.
-        (Some(rel), Some(parent)) => {
-            let parent = locate_parent(parent)?;
-            Ok(Located {
-                dir: flake_dir(&format!("{}/{rel}", parent.dir), locked),
-                source: parent.source,
-            })
-        }
-        _ => fetch_flake(ev, env, locked),
-    }
 }
 
 /// Add `self_attrs`, from the `inputs.self` of the flake `attrs` refers to
