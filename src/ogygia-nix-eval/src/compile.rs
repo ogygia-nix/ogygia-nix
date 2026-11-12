@@ -1111,7 +1111,9 @@ impl<'a> Compiler<'a> {
 
     fn path(&mut self, p: &ast::Path, pos: Pos<'a>) -> CResult<Expr<'a>> {
         let mut out: Vec<ExprRef<'a>> = Vec::new();
-        for (i, part) in p.parts().into_iter().enumerate() {
+        let parts = p.parts();
+        let interpolated = parts.len() > 1;
+        for (i, part) in parts.into_iter().enumerate() {
             match part {
                 InterpolPart::Literal(l) => {
                     let text = l.text();
@@ -1122,9 +1124,20 @@ impl<'a> Compiler<'a> {
                                 format!("the path '{text}' can not be resolved in pure mode"),
                             );
                         }
-                        let resolved = self.resolve_path_literal(text, l.is_home());
+                        // Before interpolation Nix treats `./a//..` as the
+                        // path `./a/` and the string `/..`, but rnix gives us
+                        // one literal. Only normalise the path portion now:
+                        // the string's last component may be continued by
+                        // the interpolation, as in `./a//..${"b"}`.
+                        let split = interpolated.then(|| text.find("//")).flatten();
+                        let (prefix, rest) =
+                            split.map(|at| text.split_at(at + 1)).unwrap_or((text, ""));
+                        let resolved = self.resolve_path_literal(prefix, l.is_home());
                         let path = self.ctx.alloc(PathV(self.ctx.alloc_str(&resolved)));
                         out.push(self.leak(Expr::Path(path)));
+                        if !rest.is_empty() {
+                            out.push(self.leak(Expr::Str(self.lit_str(rest.as_bytes()))));
+                        }
                     } else {
                         out.push(self.leak(Expr::Str(self.lit_str(text.as_bytes()))));
                     }
