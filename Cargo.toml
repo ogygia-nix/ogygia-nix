@@ -117,7 +117,7 @@ sha1 = "0.10"
 regex = "1"
 regex-automata = "0.4"
 rnix = "0.14"
-rowan = "0.16"
+rowan = "0.17"
 
 # Custom test harnesses
 libtest-mimic = "0.8"
