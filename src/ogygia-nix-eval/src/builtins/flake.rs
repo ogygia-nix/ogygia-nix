@@ -557,7 +557,14 @@ pub fn flake_ref_to_string<'a>(ev: &Eval<'a>, set: Value<'a>) -> R<'a> {
     let set = ev.force_attrs(set)?;
     for e in set.entries {
         match ev.force(e.value)? {
-            Value::Str(_) | Value::Int(_) | Value::Bool(_) => {}
+            Value::Str(_) | Value::Bool(_) => {}
+            Value::Int(i) if i >= 0 => {}
+            Value::Int(i) => {
+                return eval_err(format!(
+                    "negative value given for flake ref attr {}: {i}",
+                    ev.ctx.name(e.name)
+                ));
+            }
             v => {
                 return eval_err(format!(
                     "flake reference attribute sets may only contain integers, Booleans, and strings, but attribute '{}' is {}",
