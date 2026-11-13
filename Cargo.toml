@@ -111,7 +111,7 @@ which = "8"
 ariadne = "0.6"
 bumpalo = "3"
 lasso = { version = "0.7", features = ["multi-threaded"] }
-md-5 = "0.10"
+md-5 = "0.11"
 num-bigint = "0.5"
 sha1 = "0.10"
 regex = "1"
