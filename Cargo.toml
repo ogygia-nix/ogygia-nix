@@ -52,7 +52,7 @@ siphasher = "1"
 
 # Nix store database (read-only SQLite access via an async connection pool)
 rusqlite = { version = "0.38", features = ["bundled"] }
-deadpool-sqlite = "0.13"
+deadpool-sqlite = "0.14"
 
 # Integration testing against a real Nix store
 testcontainers = "0.28"
