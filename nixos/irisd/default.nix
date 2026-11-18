@@ -151,6 +151,9 @@ in
       };
     };
 
+    # Trust the same keys as the Nix daemon by default
+    ogygia.irisd.settings.trust.trusted_keys = lib.mkDefault config.nix.settings.trusted-public-keys;
+
     # Configure Nix daemon to use irisd as a preferred substituter
     nix.settings = lib.mkIf cfg.configureNixDaemon {
       substituters = lib.mkBefore [ substituterUrl ];
