@@ -198,6 +198,29 @@ pub(crate) fn url_ref(r: &[u8], flakes: bool) -> Result<Attrs, String> {
         out.push(b'?');
         out.extend(query.join(&b'&'));
     }
+    // Git accepts arbitrary transports with //, but without it only these
+    // schemes stay URLs. Otherwise the original scheme (including git+) is
+    // the SCP host, and the normalised path and remaining query are literal
+    // path text, so their percent escapes must themselves be escaped.
+    if ty == "git"
+        && uri.authority.is_none()
+        && !matches!(
+            scheme,
+            b"http" | b"https" | b"ssh" | b"git" | b"file" | b"ftp" | b"ftps"
+        )
+    {
+        let path = &out[scheme.len() + 1..];
+        if path.is_empty() {
+            return Err(format!("SCP-style Git URL '{shown}' has an empty path"));
+        }
+        out = [
+            &b"ssh://"[..],
+            &url::encode(uri.scheme, b""),
+            b"/",
+            &url::encode(path.strip_prefix(b"/").unwrap_or(path), b"/:@"),
+        ]
+        .concat();
+    }
     attrs.push(("url", Attr::Str(out)));
     Ok(attrs)
 }
