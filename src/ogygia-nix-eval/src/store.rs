@@ -119,7 +119,7 @@ pub fn fixed_output_path(recursive: bool, algo: HashAlgo, hash: &[u8], name: &st
     make_store_path("output:out", &h, name)
 }
 
-/// Check a store path name for characters Nix rejects.
+/// Check a store path name against Nix's length, component and character rules.
 pub fn check_name(name: &str) -> Result<()> {
     if name.is_empty() {
         bail!("store path name is empty");
@@ -127,7 +127,7 @@ pub fn check_name(name: &str) -> Result<()> {
     if name.len() > 211 {
         bail!("store path name '{name}' is longer than 211 characters");
     }
-    if name == "." || name == ".." {
+    if matches!(name.split('-').next(), Some("." | "..")) {
         bail!("store path name '{name}' is not valid");
     }
     if let Some(c) = name
@@ -377,6 +377,30 @@ mod tests {
         let s = base32_encode(&bytes);
         assert_eq!(s.len(), 52);
         assert_eq!(base32_decode(&s).unwrap(), bytes);
+    }
+
+    #[test]
+    fn store_name_dot_components() {
+        for name in [".", "..", ".-", "..-", ".-x", "..-x", ".--x", "..--x"] {
+            assert!(check_name(name).is_err(), "{name}");
+            let path = format!("{STORE_DIR}/{}-{name}", "0".repeat(32));
+            assert!(StorePath::parse(&path).is_none(), "{path}");
+            assert!(
+                StorePath::split(&format!("{path}/file")).is_none(),
+                "{path}"
+            );
+        }
+        for name in [
+            "...", "...-", ".x-", "..x-", "-", "-.", "-..", "x-.", "x-..",
+        ] {
+            assert!(check_name(name).is_ok(), "{name}");
+            let path = format!("{STORE_DIR}/{}-{name}", "0".repeat(32));
+            assert!(StorePath::parse(&path).is_some(), "{path}");
+            assert!(
+                StorePath::split(&format!("{path}/file")).is_some(),
+                "{path}"
+            );
+        }
     }
 
     #[test]
