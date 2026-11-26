@@ -1608,6 +1608,13 @@ fn ind_str_tokens(text: &str, out: &mut Vec<IndPart>) {
             }
             ('\'', None | Some('$')) => ("'".to_owned(), 1),
             ('$', None | Some('{' | '\'')) => ("$".to_owned(), 1),
+            ('$', Some('$')) => {
+                // A dollar pair is plain text, even before `{` or `'`;
+                // do not reconsider its second dollar as a separate piece.
+                plain.push_str("$$");
+                rest = &rest[2..];
+                continue;
+            }
             _ => {
                 plain.push(c);
                 rest = &rest[c.len_utf8()..];
