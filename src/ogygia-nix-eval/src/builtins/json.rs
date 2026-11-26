@@ -539,9 +539,21 @@ fn split_headers_after_values(text: &str) -> std::borrow::Cow<'_, str> {
     out.into()
 }
 
+fn check_toml_string(s: &str) -> R<'static, ()> {
+    if s.contains('\0') {
+        return eval_err(
+            "while parsing TOML: input string cannot be represented as Nix string because it contains null bytes",
+        );
+    }
+    Ok(())
+}
+
 fn toml_to_value<'a>(ev: &Eval<'a>, t: &toml::Value) -> R<'a> {
     Ok(match t {
-        toml::Value::String(s) => ev.string(s),
+        toml::Value::String(s) => {
+            check_toml_string(s)?;
+            ev.string(s)
+        }
         toml::Value::Integer(i) => Value::Int(*i),
         toml::Value::Float(f) => Value::Float(*f),
         toml::Value::Boolean(b) => Value::Bool(*b),
@@ -558,6 +570,7 @@ fn toml_to_value<'a>(ev: &Eval<'a>, t: &toml::Value) -> R<'a> {
         toml::Value::Table(map) => ev.attrs(
             map.iter()
                 .map(|(k, v)| {
+                    check_toml_string(k)?;
                     Ok(Entry {
                         name: ev.sym(k),
                         value: toml_to_value(ev, v)?,
