@@ -149,7 +149,13 @@
               doCheck = false;
             };
 
-            cargoArtifacts = craneLib.buildDepsOnly (commonArgs // {
+            # ogygia-hostinfod is Linux-only, so its dependencies (inotify) need
+            # not compile on Darwin.
+            depsArgs = commonArgs // lib.optionalAttrs (!isLinux) {
+              cargoExtraArgs = "--locked --workspace --exclude ogygia-hostinfod";
+            };
+
+            cargoArtifacts = craneLib.buildDepsOnly (depsArgs // {
               pname = "ogygia-deps";
               version = "git";
             });
@@ -256,7 +262,7 @@
 
             # cargo nextest archive builds with the test profile, so its
             # dependencies are cached separately from the release ones.
-            testCargoArtifacts = craneLib.buildDepsOnly (commonArgs // testProfileArgs // {
+            testCargoArtifacts = craneLib.buildDepsOnly (depsArgs // testProfileArgs // {
               pname = "ogygia-test-deps";
               version = "git";
               CARGO_PROFILE = "test";
