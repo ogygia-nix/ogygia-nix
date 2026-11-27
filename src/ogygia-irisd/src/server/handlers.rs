@@ -20,6 +20,7 @@ use tokio::io::AsyncReadExt;
 use tokio_util::io::ReaderStream;
 
 use super::AppState;
+use super::peer_nar;
 use crate::nix::narinfo::narinfo_from_path_info;
 
 /// GET /nix-cache-info
@@ -186,7 +187,7 @@ pub async fn get_nar(
     }
 
     // Try peers via bloom lookup
-    state.try_peer_nar(hash, &path).await
+    peer_nar::serve(&state, hash, nar_hash, &path).await
 }
 
 /// GET /local/nar/{path} — local-only NAR download (no peer fan-out)

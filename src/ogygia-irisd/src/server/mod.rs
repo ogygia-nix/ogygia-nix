@@ -1,6 +1,7 @@
 //! HTTP server for Nix binary cache protocol
 
 mod handlers;
+mod peer_nar;
 mod routes;
 mod state;
 
