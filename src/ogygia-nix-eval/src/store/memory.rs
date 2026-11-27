@@ -82,9 +82,7 @@ impl Store for MemoryStore {
         refs: &[&str],
     ) -> Result<(StorePath, [u8; 32])> {
         super::check_name(name)?;
-        let mut h = Sha256::new();
-        nar::dump(&mut h, &*tree, "")?;
-        let hash: [u8; 32] = h.finalize().into();
+        let hash = nar::sha256(&*tree, "")?;
         let path = StorePath(super::source_path(&hash, name, refs));
         let path = self.insert(path, || Object {
             contents: tree,
