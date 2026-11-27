@@ -10,7 +10,6 @@ use axum::response::Response;
 use bytes::Bytes;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
-use ogygia_nixutils::NarHash;
 use ogygia_nixutils::NarInfo;
 use ogygia_nixutils::Nix;
 
@@ -94,92 +93,86 @@ impl AppState {
 
     /// Try to proxy a NAR from a peer found via bloom filter lookup.
     ///
-    /// Streams bloom lookups concurrently with narinfo fetches: as each
-    /// peer's bloom becomes available and matches the hash, a narinfo fetch
-    /// is started immediately — without waiting for all blooms to arrive.
-    ///
-    /// The expected NarHash is extracted from the request URL, so peers whose
-    /// NarHash doesn't match are skipped without needing server-side state.
-    pub(super) async fn try_peer_nar(&self, hash: &str, expected_nar_hash: &str) -> Response {
+    /// `nar_path` is the request path below `nar/`, whose NarHash came from a
+    /// trusted narinfo; peers only serve a NAR whose NarHash matches it.
+    /// Peers that already have the compressed NAR cached are preferred.
+    pub(super) async fn try_peer_nar(&self, hash: &str, nar_path: &str) -> Response {
         let peer_urls = &self.config.peers.urls;
         if peer_urls.is_empty() {
             return (StatusCode::NOT_FOUND, "Not found").into_response();
         }
-
-        let trusted_keys = &self.config.trust.trusted_keys;
 
         let mut candidate_rx = self
             .peer_blooms
             .lookup_stream(peer_urls, hash, &self.http_client)
             .await;
 
-        // Parse the hex NarHash from the URL once so we can compare each peer's
-        // NarHash by digest, regardless of how the peer encodes it.
-        let expected = match NarHash::from_hex(expected_nar_hash) {
-            Ok(h) => h,
-            Err(e) => {
-                tracing::debug!(
-                    "Invalid NarHash {} in NAR request: {}",
-                    expected_nar_hash,
-                    e
-                );
-                return (StatusCode::NOT_FOUND, "Not found").into_response();
-            }
-        };
+        let nar_url =
+            |peer_url: &str| format!("{}/local/nar/{}", peer_url.trim_end_matches('/'), nar_path);
 
-        let client = self.http_client.clone();
-        let mut narinfo_futs = FuturesUnordered::new();
+        // Candidates not yet sent a plain request, in arrival order.
+        let mut untried = Vec::new();
+        let mut probes = FuturesUnordered::new();
 
         loop {
             tokio::select! {
                 biased;
 
-                Some(result) = narinfo_futs.next() => {
-                    let Some((peer_url, narinfo)): Option<(String, NarInfo)> = result else {
-                        continue;
-                    };
-
-                    if !narinfo.is_trusted(trusted_keys) {
-                        tracing::debug!(
-                            "narinfo {} from {} is not trusted (no CA field or trusted signature), skipping",
-                            hash,
-                            peer_url
-                        );
+                Some(probe) = probes.next() => {
+                    let (peer_url, cached): (String, bool) = probe;
+                    if !cached {
                         continue;
                     }
-
-                    // Skip peers whose NarHash doesn't match the one in the URL
-                    if narinfo.nar_hash != expected {
-                        continue;
-                    }
-
-                    let nar_url = format!("{}/local/{}", peer_url.trim_end_matches('/'), narinfo.url);
-                    match stream_nar_from_url(&self.http_client, &nar_url).await {
-                        Some(response) => {
-                            if narinfo.ca.is_some() {
-                                tracing::info!("Proxying NAR {} from peer {} (content-addressed)", hash, peer_url);
-                            } else {
-                                tracing::info!("Proxying NAR {} from peer {}", hash, peer_url);
-                            }
-                            return response;
-                        }
-                        None => continue,
+                    untried.retain(|p| p != &peer_url);
+                    if let Some(response) = stream_nar_from_url(&self.http_client, &nar_url(&peer_url)).await {
+                        tracing::info!("Proxying cached NAR {} from peer {}", hash, peer_url);
+                        return response;
                     }
                 }
 
                 Some(peer_url) = candidate_rx.recv() => {
-                    narinfo_futs.push(fetch_narinfo_from_peer(
-                        client.clone(),
-                        peer_url,
-                        hash.to_string(),
-                    ));
+                    untried.push(peer_url.clone());
+                    let client = self.http_client.clone();
+                    let url = nar_url(&peer_url);
+                    probes.push(async move {
+                        let cached = is_cached_on_peer(&client, &url).await;
+                        (peer_url, cached)
+                    });
                 }
 
                 else => break,
             }
         }
 
+        for peer_url in untried {
+            if let Some(response) =
+                stream_nar_from_url(&self.http_client, &nar_url(&peer_url)).await
+            {
+                tracing::info!("Proxying NAR {} from peer {}", hash, peer_url);
+                return response;
+            }
+        }
+
         (StatusCode::NOT_FOUND, "Not found").into_response()
+    }
+}
+
+/// Whether a peer answers a cache-only `HEAD` for `url` with success.
+async fn is_cached_on_peer(client: &reqwest::Client, url: &str) -> bool {
+    match client
+        .head(url)
+        .header(reqwest::header::CACHE_CONTROL, "only-if-cached")
+        .send()
+        .await
+    {
+        Ok(r) => {
+            tracing::debug!("Cache-only probe of {} returned {}", url, r.status());
+            r.status().is_success()
+        }
+        Err(e) => {
+            tracing::debug!("Cache-only probe of {} failed: {}", url, e);
+            false
+        }
     }
 }
 
@@ -509,5 +502,153 @@ mod tests {
         assert_eq!(body.len(), PAYLOAD_SIZE);
         assert_eq!(body.as_ref(), test_payload().as_slice());
         assert_eq!(counter.load(Ordering::SeqCst), 2);
+    }
+
+    mod peer_nar {
+        use std::time::Duration;
+
+        use axum::http::HeaderMap;
+        use axum::http::Method;
+        use axum::routing::get;
+
+        use super::*;
+        use crate::config::CacheConfig;
+
+        const HASH: &str = "abc123def456ghi789jkl012mno345pq";
+        const NAR_PATH: &str = "0101/abc123def456ghi789jkl012mno345pq-test.nar.zst";
+
+        fn local_bloom() -> LocalBloom {
+            let bloom = LocalBloom::new(0.01, 0.1);
+            bloom.insert(HASH);
+            bloom.finish_rebuild();
+            bloom
+        }
+
+        #[derive(Clone, Copy)]
+        enum Peer {
+            /// Has the compressed NAR cached.
+            Cached,
+            /// Serves the NAR only to a plain request.
+            Uncached,
+            /// Cannot serve the NAR at all.
+            Broken,
+        }
+
+        /// A peer advertising `HASH` that answers `/local/nar` with its
+        /// `name` as the body. Returns its URL and a count of the plain
+        /// `GET`s it received.
+        async fn mock_peer(kind: Peer, name: &'static str) -> (String, Arc<AtomicU32>) {
+            let plain_gets = Arc::new(AtomicU32::new(0));
+            let counter = Arc::clone(&plain_gets);
+            let bloom = local_bloom().serialize().unwrap().unwrap();
+            let router = axum::Router::new()
+                .route("/bloom", get(move || async move { bloom }))
+                .route(
+                    "/local/nar/{*path}",
+                    get(move |method: Method, headers: HeaderMap| async move {
+                        let only_if_cached = headers
+                            .get("cache-control")
+                            .is_some_and(|v| v == "only-if-cached");
+                        if !only_if_cached && method == Method::GET {
+                            counter.fetch_add(1, Ordering::SeqCst);
+                        }
+                        match (kind, only_if_cached) {
+                            (Peer::Cached, _) | (Peer::Uncached, false) => (
+                                StatusCode::OK,
+                                [("x-ogygia-nar-file-hash", FILE_HASH)],
+                                name,
+                            )
+                                .into_response(),
+                            (Peer::Uncached | Peer::Broken, true) => {
+                                StatusCode::GATEWAY_TIMEOUT.into_response()
+                            }
+                            (Peer::Broken, false) => {
+                                StatusCode::INTERNAL_SERVER_ERROR.into_response()
+                            }
+                        }
+                    }),
+                );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            tokio::spawn(async move { axum::serve(listener, router).await });
+            (url, plain_gets)
+        }
+
+        /// Fetch the NAR through `try_peer_nar` with `peers` configured,
+        /// returning the status and body.
+        async fn fetch(peers: Vec<String>) -> (StatusCode, Bytes) {
+            let cache_dir = tempfile::tempdir().unwrap();
+            let bloom = local_bloom();
+            let config = Config {
+                server: crate::config::ServerConfig {
+                    listen: vec!["127.0.0.1:0".to_string()],
+                    priority: 30,
+                },
+                bloom: Default::default(),
+                peers: crate::config::PeersConfig { urls: peers },
+                trust: Default::default(),
+                cache: CacheConfig {
+                    dir: cache_dir.path().to_path_buf(),
+                    ..Default::default()
+                },
+            };
+            let state = AppState {
+                nar_cache: Arc::new(NarCache::new(&config.cache).await.unwrap()),
+                config: Arc::new(config),
+                local_bloom: Arc::new(LocalBloom::new(0.01, 0.1)),
+                peer_blooms: Arc::new(PeerBlooms::new(
+                    Duration::from_secs(300),
+                    Duration::from_secs(600),
+                    bloom.num_bits(),
+                    bloom.num_hashes(),
+                )),
+                http_client: reqwest::Client::builder().no_proxy().build().unwrap(),
+                nix: Nix::in_memory(&[]).await.unwrap(),
+            };
+            let response = state.try_peer_nar(HASH, NAR_PATH).await;
+            let status = response.status();
+            let body = axum::body::to_bytes(response.into_body(), 1024)
+                .await
+                .unwrap();
+            (status, body)
+        }
+
+        #[tokio::test]
+        async fn test_prefers_cached_peer() {
+            let (a, a_gets) = mock_peer(Peer::Uncached, "a").await;
+            let (b, b_gets) = mock_peer(Peer::Cached, "b").await;
+            let (c, c_gets) = mock_peer(Peer::Uncached, "c").await;
+
+            let (status, body) = fetch(vec![a, b, c]).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(body.as_ref(), b"b");
+            assert_eq!(a_gets.load(Ordering::SeqCst), 0);
+            assert_eq!(b_gets.load(Ordering::SeqCst), 1);
+            assert_eq!(c_gets.load(Ordering::SeqCst), 0);
+        }
+
+        #[tokio::test]
+        async fn test_falls_back_to_plain_request() {
+            let (a, a_gets) = mock_peer(Peer::Uncached, "a").await;
+            let (b, b_gets) = mock_peer(Peer::Uncached, "b").await;
+
+            let (status, body) = fetch(vec![a, b]).await;
+            assert_eq!(status, StatusCode::OK);
+            let gets = [a_gets.load(Ordering::SeqCst), b_gets.load(Ordering::SeqCst)];
+            let expected: &[u8] = if gets == [1, 0] { b"a" } else { b"b" };
+            assert_eq!(gets.iter().sum::<u32>(), 1);
+            assert_eq!(body.as_ref(), expected);
+        }
+
+        #[tokio::test]
+        async fn test_fails_when_no_peer_can_serve() {
+            let (a, a_gets) = mock_peer(Peer::Broken, "a").await;
+            let (b, b_gets) = mock_peer(Peer::Broken, "b").await;
+
+            let (status, _) = fetch(vec![a, b]).await;
+            assert_eq!(status, StatusCode::NOT_FOUND);
+            assert_eq!(a_gets.load(Ordering::SeqCst), 1);
+            assert_eq!(b_gets.load(Ordering::SeqCst), 1);
+        }
     }
 }

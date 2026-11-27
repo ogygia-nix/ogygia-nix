@@ -86,12 +86,11 @@ impl NixDb {
         Ok(db)
     }
 
-    /// Open an empty in-memory database with the Nix schema.
+    /// Open an in-memory database with the Nix schema, holding only `paths`.
     ///
-    /// Intended for tests that need a [`NixDb`] but no real store data: every
-    /// lookup returns "not found". The schema mirrors the columns these queries
-    /// read from a real Nix database.
-    pub async fn open_in_memory() -> Result<Self> {
+    /// Intended for tests that need a [`NixDb`] but no real store. Each
+    /// reference must itself be one of `paths`.
+    pub async fn open_in_memory(paths: &[PathInfo]) -> Result<Self> {
         use std::sync::atomic::AtomicU64;
         use std::sync::atomic::Ordering;
 
@@ -113,6 +112,44 @@ impl NixDb {
             .await
             .map_err(|e| anyhow::anyhow!("failed to create Nix schema: {e}"))?
             .context("failed to create Nix schema")?;
+
+        let paths = paths.to_vec();
+        conn.interact(move |conn| {
+            for info in &paths {
+                let sigs = info
+                    .signatures
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                conn.execute(
+                    "INSERT INTO ValidPaths (path, hash, narSize, sigs, ca, deriver) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    rusqlite::params![
+                        info.path,
+                        format!("sha256:{}", info.nar_hash.to_hex()),
+                        info.nar_size as i64,
+                        sigs,
+                        info.ca,
+                        info.deriver,
+                    ],
+                )?;
+            }
+            for info in &paths {
+                for reference in &info.references {
+                    conn.execute(
+                        "INSERT INTO Refs (referrer, reference) \
+                         SELECT a.id, b.id FROM ValidPaths a, ValidPaths b \
+                         WHERE a.path = ?1 AND b.path = ?2",
+                        [&info.path, reference],
+                    )?;
+                }
+            }
+            Ok::<_, rusqlite::Error>(())
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to insert store paths: {e}"))?
+        .context("failed to insert store paths")?;
         Ok(Self { pool })
     }
 
@@ -553,7 +590,7 @@ chmod -R a+rw /work
     /// so it needs no Docker daemon.
     #[tokio::test]
     async fn is_ultimate_reads_column_treating_null_as_false() {
-        let db = NixDb::open_in_memory().await.expect("open in-memory db");
+        let db = NixDb::open_in_memory(&[]).await.expect("open in-memory db");
         db.pool
             .get()
             .await

@@ -39,10 +39,11 @@ pub struct Nix {
 }
 
 impl Nix {
-    /// A handle backed by an empty in-memory database, for tests that need a
-    /// [`Nix`] but no real store data: every lookup returns "not found".
-    pub async fn in_memory() -> Result<Self> {
-        let db = NixDb::open_in_memory().await?;
+    /// A handle backed by an in-memory database holding only `paths`, for
+    /// tests that need a [`Nix`] but no real store. Each reference must itself
+    /// be one of `paths`.
+    pub async fn in_memory(paths: &[PathInfo]) -> Result<Self> {
+        let db = NixDb::open_in_memory(paths).await?;
         Ok(Self {
             db: Arc::new(OnceCell::new_with(Some(db))),
             cli: Arc::new(OnceLock::new()),
