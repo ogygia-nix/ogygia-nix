@@ -21,8 +21,6 @@ use std::rc::Rc;
 use anyhow::Context as _;
 use anyhow::Result;
 use anyhow::bail;
-use sha2::Digest;
-use sha2::Sha256;
 
 use crate::accessor::Accessor;
 use crate::accessor::FileType;
@@ -503,9 +501,7 @@ impl Io {
             bail!("path '{logical}' does not exist");
         }
         let (acc, path) = self.locate(logical)?;
-        let mut h = Sha256::new();
-        nar::dump(&mut h, &*acc, &path)?;
-        Ok(h.finalize().into())
+        nar::sha256(&*acc, &path)
     }
 }
 

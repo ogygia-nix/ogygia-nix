@@ -6,6 +6,8 @@ use std::io::Write;
 use anyhow::Context as _;
 use anyhow::Result;
 use anyhow::bail;
+use sha2::Digest;
+use sha2::Sha256;
 
 use crate::accessor::Accessor;
 use crate::accessor::FileType;
@@ -22,6 +24,23 @@ fn write_str(w: &mut impl Write, s: &[u8]) -> std::io::Result<()> {
 pub fn dump(w: &mut impl Write, acc: &dyn Accessor, path: &str) -> Result<()> {
     write_str(w, b"nix-archive-1")?;
     dump_node(w, acc, path)
+}
+
+/// SHA-256 of the NAR serialisation of `path` in `acc`.
+pub fn sha256(acc: &dyn Accessor, path: &str) -> Result<[u8; 32]> {
+    struct Hasher(Sha256);
+    impl Write for Hasher {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.update(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut h = Hasher(Sha256::new());
+    dump(&mut h, acc, path)?;
+    Ok(h.0.finalize().into())
 }
 
 fn dump_node(w: &mut impl Write, acc: &dyn Accessor, path: &str) -> Result<()> {

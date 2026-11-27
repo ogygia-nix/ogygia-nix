@@ -46,7 +46,7 @@ rand = "0.10"
 
 # Cryptography and hashing
 base64 = "0.23"
-sha2 = "0.10"
+sha2 = "0.11"
 hex = "0.4"
 siphasher = "1"
 
@@ -111,9 +111,9 @@ which = "8"
 ariadne = "0.6"
 bumpalo = "3"
 lasso = { version = "0.7", features = ["multi-threaded"] }
-md-5 = "0.10"
+md-5 = "0.11"
 num-bigint = "0.5"
-sha1 = "0.10"
+sha1 = "0.11"
 regex = "1"
 regex-automata = "0.4"
 rnix = "0.15"
