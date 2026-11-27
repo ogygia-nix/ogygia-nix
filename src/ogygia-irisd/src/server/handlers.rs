@@ -9,6 +9,7 @@ use axum::extract::Path;
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::http::StatusCode;
+use axum::http::header::CACHE_CONTROL;
 use axum::response::IntoResponse;
 use axum::response::Response;
 use ogygia_nixutils::NarInfo;
@@ -179,20 +180,22 @@ pub async fn get_nar(
     };
 
     let range = parse_byte_range(&headers);
-    let local = try_local_store_nar(&state, hash, nar_hash, range).await;
+    let local = try_local_store_nar(&state, hash, nar_hash, range, false).await;
     if local.status() != StatusCode::NOT_FOUND {
         return local;
     }
 
     // Try peers via bloom lookup
-    state.try_peer_nar(hash, nar_hash).await
+    state.try_peer_nar(hash, &path).await
 }
 
 /// GET /local/nar/{path} — local-only NAR download (no peer fan-out)
 ///
 /// Used by peers to fetch NARs from this node's local store without
 /// triggering cascading fan-out across the cluster. Supports `Range`
-/// requests for resumable downloads.
+/// requests for resumable downloads. With `Cache-Control: only-if-cached`,
+/// answers only if the compressed NAR is already cached and returns
+/// `504 Gateway Timeout` otherwise.
 pub async fn get_local_nar(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -204,7 +207,13 @@ pub async fn get_local_nar(
     };
 
     let range = parse_byte_range(&headers);
-    try_local_store_nar(&state, hash, nar_hash, range).await
+    let only_if_cached = headers
+        .get_all(CACHE_CONTROL)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(','))
+        .any(|directive| directive.trim().eq_ignore_ascii_case("only-if-cached"));
+    try_local_store_nar(&state, hash, nar_hash, range, only_if_cached).await
 }
 
 /// Parse a NAR path into `(nar_hash, store_hash)`.
@@ -245,12 +254,15 @@ fn parse_byte_range(headers: &HeaderMap) -> Option<(u64, Option<u64>)> {
 ///
 /// When `range` is `Some`, returns a `206 Partial Content` response for
 /// the requested byte range. Supports open-ended `(start, None)` and
-/// closed `(start, Some(end))` ranges.
+/// closed `(start, Some(end))` ranges. When `only_if_cached` is set, a NAR
+/// that is not already cached gets `504 Gateway Timeout` instead of being
+/// generated.
 async fn try_local_store_nar(
     state: &AppState,
     hash: &str,
     expected_nar_hash: &str,
     range: Option<(u64, Option<u64>)>,
+    only_if_cached: bool,
 ) -> Response {
     let store_hash = match hash.parse::<StoreHash>() {
         Ok(h) => h,
@@ -278,16 +290,30 @@ async fn try_local_store_nar(
         return (StatusCode::NOT_FOUND, "Not found").into_response();
     }
 
-    // Get from cache or generate, opening the file under the RwLock
-    let (cached, mut file) = match state.nar_cache.ensure_and_open(hash, &store_path).await {
-        Ok((cached, Some(file))) => (cached, file),
-        Ok((_, None)) => {
+    let cached = if only_if_cached {
+        match state.nar_cache.get(hash).await {
+            Some(cached) => cached,
+            None => return (StatusCode::GATEWAY_TIMEOUT, "Not cached").into_response(),
+        }
+    } else {
+        match state.nar_cache.ensure(hash, &store_path).await {
+            Ok(cached) => cached,
+            Err(e) => {
+                tracing::error!("Failed to generate NAR for {}: {}", store_path.display(), e);
+                return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to generate NAR")
+                    .into_response();
+            }
+        }
+    };
+    let mut file = match cached.open().await {
+        Ok(Some(file)) => file,
+        Ok(None) => {
             tracing::debug!("Cached NAR for {} evicted during open", hash);
             return (StatusCode::NOT_FOUND, "Not found").into_response();
         }
         Err(e) => {
-            tracing::error!("Failed to generate NAR for {}: {}", store_path.display(), e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to generate NAR").into_response();
+            tracing::error!("Failed to open cached NAR for {}: {}", hash, e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to open NAR").into_response();
         }
     };
 
@@ -614,7 +640,7 @@ mod tests {
                 )),
                 http_client: reqwest::Client::new(),
                 nar_cache,
-                nix: ogygia_nixutils::Nix::in_memory().await.unwrap(),
+                nix: ogygia_nixutils::Nix::in_memory(&[]).await.unwrap(),
             })
         }
 
@@ -645,6 +671,124 @@ mod tests {
                 .get("content-type")
                 .expect("content-type");
             assert_eq!(content_type, "application/octet-stream");
+        }
+    }
+
+    mod local_nar_only_if_cached {
+        use std::time::Duration;
+
+        use ogygia_nixutils::NarHash;
+        use ogygia_nixutils::PathInfo;
+        use sha2::Digest;
+        use sha2::Sha256;
+
+        use super::*;
+        use crate::bloom::local::LocalBloom;
+        use crate::bloom::peers::PeerBlooms;
+        use crate::config::CacheConfig;
+        use crate::nix::cache::NarCache;
+        use crate::server::create_router;
+
+        const STORE_NAME: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-test";
+        const CACHED_NAR: &[u8] = b"compressed nar";
+
+        /// Serve a node whose store holds `STORE_NAME`, with its compressed
+        /// NAR already cached if `cached`. Returns the node's state, the
+        /// `/local/nar` URL for the path, and the cache directory.
+        async fn serve_node(cached: bool) -> (Arc<AppState>, String, tempfile::TempDir) {
+            let cache_dir = tempfile::tempdir().unwrap();
+            if cached {
+                std::fs::write(
+                    cache_dir.path().join(format!("{STORE_NAME}.nar.zst")),
+                    CACHED_NAR,
+                )
+                .unwrap();
+            }
+            let config = crate::config::Config {
+                server: crate::config::ServerConfig {
+                    listen: vec!["127.0.0.1:0".to_string()],
+                    priority: 30,
+                },
+                bloom: Default::default(),
+                peers: Default::default(),
+                trust: Default::default(),
+                cache: CacheConfig {
+                    dir: cache_dir.path().to_path_buf(),
+                    ..Default::default()
+                },
+            };
+            let nar_cache = Arc::new(NarCache::new(&config.cache).await.unwrap());
+            nar_cache.recover().await.unwrap();
+            let nar_hash = NarHash::from_bytes([1; 32]);
+            let path_info = PathInfo {
+                path: format!("/nix/store/{STORE_NAME}"),
+                nar_hash,
+                nar_size: 1,
+                references: Vec::new(),
+                deriver: None,
+                signatures: Vec::new(),
+                ca: Some("fixed:sha256:test".to_string()),
+            };
+            let state = Arc::new(AppState {
+                config: Arc::new(config),
+                local_bloom: Arc::new(LocalBloom::new(0.01, 0.1)),
+                peer_blooms: Arc::new(PeerBlooms::new(
+                    Duration::from_secs(300),
+                    Duration::from_secs(600),
+                    0,
+                    0,
+                )),
+                http_client: reqwest::Client::new(),
+                nar_cache,
+                nix: ogygia_nixutils::Nix::in_memory(&[path_info]).await.unwrap(),
+            });
+
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!(
+                "http://{}/local/nar/{}/{STORE_NAME}.nar.zst",
+                listener.local_addr().unwrap(),
+                nar_hash.to_hex(),
+            );
+            let router = create_router(Arc::clone(&state));
+            tokio::spawn(async move { axum::serve(listener, router).await });
+            (state, url, cache_dir)
+        }
+
+        async fn head_only_if_cached(url: &str) -> reqwest::Response {
+            reqwest::Client::builder()
+                .no_proxy()
+                .build()
+                .unwrap()
+                .head(url)
+                .header("cache-control", "only-if-cached")
+                .send()
+                .await
+                .unwrap()
+        }
+
+        #[tokio::test]
+        async fn test_head_only_if_cached_hit() {
+            let (_state, url, _cache_dir) = serve_node(true).await;
+            let response = head_only_if_cached(&url).await;
+            assert_eq!(response.status(), StatusCode::OK);
+            let file_hash = NarHash::from_bytes(Sha256::digest(CACHED_NAR).into()).to_sri();
+            assert_eq!(
+                response.headers()["x-ogygia-nar-file-hash"],
+                file_hash.as_str()
+            );
+            assert_eq!(
+                response.headers()["content-length"],
+                CACHED_NAR.len().to_string().as_str()
+            );
+        }
+
+        #[tokio::test]
+        async fn test_head_only_if_cached_miss_does_not_cache() {
+            let (state, url, cache_dir) = serve_node(false).await;
+            let response = head_only_if_cached(&url).await;
+            assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+            assert!(state.nar_cache.get(&STORE_NAME[..32]).await.is_none());
+            assert_eq!(std::fs::read_dir(cache_dir.path()).unwrap().count(), 0);
         }
     }
 }

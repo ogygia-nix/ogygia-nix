@@ -51,7 +51,7 @@ impl CachedNar {
     /// already gone and there is no point waiting.
     ///
     /// Returns `None` if the entry is being evicted or has already been evicted.
-    async fn open(&self) -> Result<Option<tokio::fs::File>> {
+    pub async fn open(&self) -> Result<Option<tokio::fs::File>> {
         let guard = match self.path.try_read() {
             Ok(g) => g,
             Err(_) => return Ok(None),
@@ -143,23 +143,9 @@ impl NarCache {
             .await
     }
 
-    /// Ensure a NAR is cached and open the file for reading.
-    ///
-    /// Like [`ensure`](Self::ensure), but also opens the backing file under
-    /// the `RwLock` before returning so the fd survives eviction.
-    ///
-    /// The file handle is `None` if the entry was evicted between the cache
-    /// lookup and the open call.
-    pub async fn ensure_and_open(
-        &self,
-        store_hash: &str,
-        store_path: &Path,
-    ) -> Result<(Arc<CachedNar>, Option<tokio::fs::File>), Arc<anyhow::Error>> {
-        let cached = self.ensure(store_hash, store_path).await?;
-
-        let file = cached.open().await.map_err(Arc::new)?;
-
-        Ok((cached, file))
+    /// Look up an already-cached NAR without generating it.
+    pub async fn get(&self, store_hash: &str) -> Option<Arc<CachedNar>> {
+        self.cache.get(store_hash).await
     }
 
     /// Scan the cache directory and re-populate the moka cache from existing files.
