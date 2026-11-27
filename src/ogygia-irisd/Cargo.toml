@@ -48,7 +48,6 @@ moka = { workspace = true }
 async-compression = { workspace = true }
 
 # Serialization
-bincode = { workspace = true }
 
 # Logging
 tracing = { workspace = true }
