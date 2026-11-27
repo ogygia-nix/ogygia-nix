@@ -462,6 +462,10 @@
 
               ogygia-audit = craneLib.cargoAudit {
                 inherit src advisory-db;
+                # RUSTSEC-2026-0459 needs a crafted database and -wal file, but
+                # we only open the root-owned Nix database. Drop once
+                # deadpool-sqlite supports rusqlite >= 0.41.
+                cargoAuditExtraArgs = "--ignore yanked --ignore RUSTSEC-2026-0459";
               };
 
               ogygia-deny = craneLib.cargoDeny {
