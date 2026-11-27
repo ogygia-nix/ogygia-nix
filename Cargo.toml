@@ -73,7 +73,6 @@ zip = { version = "9", default-features = false, features = ["bzip2", "deflate-f
 zstd = "0.14"
 
 # Serialization
-bincode = "1"
 serde_json = "1"
 
 # Logging
