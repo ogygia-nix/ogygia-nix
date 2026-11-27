@@ -116,8 +116,8 @@ num-bigint = "0.5"
 sha1 = "0.10"
 regex = "1"
 regex-automata = "0.4"
-rnix = "0.14"
-rowan = "0.16"
+rnix = "0.15"
+rowan = "0.17"
 
 # Custom test harnesses
 libtest-mimic = "0.8"
