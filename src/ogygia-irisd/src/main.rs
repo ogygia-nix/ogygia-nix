@@ -16,6 +16,7 @@ use tracing_subscriber::EnvFilter;
 
 mod bloom;
 mod config;
+mod multifetch;
 mod nix;
 mod server;
 mod store;
